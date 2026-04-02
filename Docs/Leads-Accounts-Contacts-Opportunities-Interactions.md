@@ -92,15 +92,15 @@ The following diagram summarizes the relationships that are directly evidenced i
 
 ```mermaid
 flowchart LR
-  lead["Lead\n(Leads: vtiger_leaddetails)"]
-  acc["Account\n(Accounts: vtiger_account)"]
-  con["Contact\n(Contacts: vtiger_contactdetails)"]
-  pot["Opportunity\n(Potentials: vtiger_potential)"]
+  lead[Lead]
+  acc[Account]
+  con[Contact]
+  pot[Opportunity]
 
   con -->|accountid| acc
-  pot -->|related_to (Account)| acc
-  pot -->|related_to (Contact)| con
-  con <--> |vtiger_contpotentialrel| pot
+  pot -->|related_to Account| acc
+  pot -->|related_to Contact| con
+  con ---|vtiger_contpotentialrel| pot
 
   lead -.->|convert to| acc
   lead -.->|convert to| con
