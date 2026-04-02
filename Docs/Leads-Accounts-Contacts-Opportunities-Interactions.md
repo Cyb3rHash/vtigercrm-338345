@@ -348,6 +348,55 @@ sequenceDiagram
   UI-->>U: "Redirect to Account/Contact detail view"
 ```
 
+### 5.9 Code-level connection map (include/require paths and function call chain)
+
+The Leads module connects to Accounts and Contacts most concretely via the lead conversion flow, which is implemented as a classic PHP UI endpoint that calls a Webservices “convert lead” function. At a code level, the connection is not a compile-time dependency in the sense of shared classes between modules; instead it is a run-time workflow that includes the right files and uses the Webservices layer to create and then link module records.
+
+In the UI layer, `modules/Leads/ConvertLead.php` is responsible for rendering the conversion form. It requires `modules/Leads/ConvertLeadUI.php` and instantiates `ConvertLeadUI`, which prepares the mapping UI and defaults, and then it renders `Smarty/templates/modules/Leads/ConvertLead.tpl` via `vtigerCRM_Smarty`.
+
+When the user submits the conversion form, the POST is handled by `modules/Leads/LeadConvertToEntities.php`. This script wires the Leads module to Accounts/Contacts by explicitly including the Webservice conversion implementation (`require_once 'include/Webservices/ConvertLead.php'`) and then invoking the conversion function:
+
+- It converts the numeric Lead record id into a Webservice id using `vtws_getWebserviceEntityId('Leads', $recordId)`.
+- It builds the `$entityValues` payload, including `entities` (which of Accounts / Contacts / Potentials to create), `assignedTo` (Users or Groups Webservice id), and `transferRelatedRecordsTo` (defaults to `Contacts`).
+- It calls `vtws_convertlead($entityValues, $current_user)`.
+
+The Webservices conversion implementation is `include/Webservices/ConvertLead.php`. It requires the core Webservices entrypoints:
+
+- `include/Webservices/Retrieve.php` (for `vtws_retrieve`)
+- `include/Webservices/Create.php` (for `vtws_create`)
+- `include/Webservices/Delete.php` (for `vtws_delete`)
+- `include/Webservices/DescribeObject.php` (for `vtws_describe`, used by mandatory/default handling)
+
+Inside `vtws_convertlead`, the creation and linking logic occurs in this order:
+
+- It retrieves the lead record (`vtws_retrieve($entityvalues['leadId'], $user)`), and checks `vtiger_leaddetails.converted` to prevent double conversion.
+- It creates or reuses an Account (a de-duplication query by `accountname` is executed; if an Account exists, it is reused and no new record is created).
+- It creates a Contact and, if an Account exists, sets `Contacts.account_id` to the Account Webservice id. This is the primary code-level operation that connects a newly converted Contact to an Account.
+- It creates a Potential and sets `Potentials.related_to` to either the Account or Contact Webservice id (depending on which exists).
+- It optionally creates an additional Contact↔Potential many-to-many link in `vtiger_contpotentialrel`.
+- It calls `vtws_convertLeadTransferHandler(...)` (which calls `vtws_transferLeadRelatedRecords(...)` from `include/Webservices/Utils.php`) to migrate the Lead’s related records to either the created Contact or Account, depending on `transferRelatedRecordsTo`.
+- It calls `vtws_getRelatedActivities(...)` (also in `include/Webservices/Utils.php`) to move the Lead’s activities/emails onto the created Account/Contact.
+- It finalizes conversion by marking the Lead as converted with `vtws_updateConvertLeadStatus(...)`.
+
+After `vtws_convertlead` returns, `modules/Leads/LeadConvertToEntities.php` parses the Webservice ids with `vtws_getIdComponents(...)` and performs the UI-level connection by redirecting to either the Account or Contact detail view (prioritizing the Account if both were created). This is how the conversion result becomes visible in the UI routing.
+
+### 5.10 Lead-to-Account/Contact database operations (queries and tables)
+
+The following table summarizes the concrete SQL statements and tables that implement Leads → Accounts/Contacts linkage and migration during conversion. The intent is to show exactly where “Leads connects to Accounts/Contacts” becomes visible at the database level.
+
+| Stage | Location (file/function) | Tables and queries | Effect on Leads ↔ Accounts/Contacts integration |
+|---|---|---|---|
+| Prevent double conversion | `include/Webservices/ConvertLead.php` / `vtws_convertlead()` | `SELECT converted FROM vtiger_leaddetails WHERE converted = 1 AND leadid=?` | Ensures the same Lead is not converted twice, which would otherwise create duplicate Accounts/Contacts or duplicate relations. |
+| Account de-duplication (reuse by name) | `include/Webservices/ConvertLead.php` / `vtws_convertlead()` | `SELECT vtiger_account.accountid FROM vtiger_account, vtiger_crmentity WHERE vtiger_crmentity.crmid=vtiger_account.accountid AND vtiger_account.accountname=? AND vtiger_crmentity.deleted=0` | If a matching Account exists, the conversion reuses it; the rest of the conversion then links the new Contact to this existing Account. |
+| Contact-to-Account “primary” link | `include/Webservices/ConvertLead.php` / `vtws_convertlead()` | The linkage is set as Webservice field `Contacts.account_id = <Accounts webservice id>`, which ultimately persists into `vtiger_contactdetails.accountid` via the Contacts module save pipeline (`vtws_create` → module save). | This is the canonical Accounts↔Contacts relationship in vtiger (one Account to many Contacts via `vtiger_contactdetails.accountid`). Lead conversion is one of the main ways that link is created. |
+| Contact-to-Potential link (additional relation) | `include/Webservices/ConvertLead.php` / `vtws_convertlead()` | `INSERT INTO vtiger_contpotentialrel VALUES(?,?)` | When Accounts, Contacts, and Potentials all exist after conversion, vtiger additionally creates a Contact↔Potential link. This is not an Account/Contact link, but it is part of the “converted lead results in connected sales entities” data graph. |
+| Notes and attachments migration | `include/Webservices/Utils.php` / `vtws_getRelatedNotesAttachments()` | `SELECT * FROM vtiger_senotesrel WHERE crmid=?` then `INSERT INTO vtiger_senotesrel(crmid,notesid) VALUES(?,?)`; and `SELECT * FROM vtiger_seattachmentsrel WHERE crmid=?` then `INSERT INTO vtiger_seattachmentsrel(crmid,attachmentsid) VALUES(?,?)` | Re-links the Lead’s documents/attachments onto the destination entity (usually the new Contact). This preserves context after the Lead is marked converted. |
+| Products migration | `include/Webservices/Utils.php` / `vtws_saveLeadRelatedProducts()` | `SELECT * FROM vtiger_seproductsrel WHERE crmid=?` then `INSERT INTO vtiger_seproductsrel VALUES(?,?,?)` (destination id, product id, destination module name as `setype`) | Copies product links from Lead onto the destination Account/Contact (or Potential if configured), connecting converted entities to the same products the Lead referenced. |
+| Generic relation migration (cross-module) | `include/Webservices/Utils.php` / `vtws_saveLeadRelations()` | `SELECT * FROM vtiger_crmentityrel WHERE crmid=?` then `INSERT INTO vtiger_crmentityrel VALUES(?,?,?,?)`; and `SELECT * FROM vtiger_crmentityrel WHERE relcrmid=?` then `INSERT INTO vtiger_crmentityrel VALUES(?,?,?,?)` | Migrates generic relationships from the Lead into relationships owned by the destination entity. This is one of the widest “Leads connects to the rest of the CRM” mechanisms during conversion. Note: as written, this function contains a code-level issue where the result of `$adb->pquery(...)` is not assigned to `$resultNew` before checking `$resultNew === false`, which can lead to a PHP notice and reduces the reliability of the error detection logic. |
+| Campaign migration | `include/Webservices/Utils.php` / `vtws_saveLeadRelatedCampaigns()` | `SELECT * FROM vtiger_campaignleadrel WHERE leadid=?` then `INSERT INTO vtiger_campaignaccountrel (campaignid, accountid) VALUES(?,?)` or `INSERT INTO vtiger_campaigncontrel (campaignid, contactid) VALUES(?,?)` | Moves campaign membership from Lead to Account/Contact, connecting the converted entities into marketing history. |
+| Activities and emails migration | `include/Webservices/Utils.php` / `vtws_getRelatedActivities()` | `SELECT * FROM vtiger_seactivityrel WHERE crmid=?`; per activity: `SELECT setype FROM vtiger_crmentity WHERE crmid=?`; then `DELETE FROM vtiger_seactivityrel WHERE crmid=?`; then inserts to `vtiger_seactivityrel(crmid,activityid)` for Accounts and to `vtiger_cntactivityrel(contactid,activityid)` for Contacts; emails are inserted into `vtiger_seactivityrel` for exactly one chosen destination id | This is one of the most visible “post-conversion connection” behaviors: tasks/events move to the Account and/or Contact, while emails are attached to exactly one destination entity (the `transferRelatedRecordsTo` choice). |
+| Mark Lead as converted and cleanup tracking | `include/Webservices/ConvertLead.php` / `vtws_updateConvertLeadStatus()` | `UPDATE vtiger_leaddetails SET converted = 1 WHERE leadid=?`; `DELETE FROM vtiger_campaignleadrel WHERE leadid=?`; `DELETE FROM vtiger_tracker WHERE item_id=?`; `UPDATE vtiger_crmentity SET modifiedtime=?, modifiedby=? WHERE crmid=?` | Finalizes conversion, leaving the newly created Account/Contact as the “active” entities. This is the point where the Lead is prevented from appearing in places that filter on `converted = 0` (for example export queries in `modules/Leads/Leads.php`). |
+
 ## 6. Triggers and Workflows Affecting These Modules
 
 vtiger CRM has two related automation mechanisms evidenced in this repository:

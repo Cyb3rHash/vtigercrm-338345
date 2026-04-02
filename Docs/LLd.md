@@ -440,27 +440,27 @@ Key internal steps and DB interactions:
 
 ```mermaid
 sequenceDiagram
-  participant UI as "modules/Leads/LeadConvertToEntities.php"
-  participant CL as "include/Webservices/ConvertLead.php"
-  participant U as "include/Webservices/Utils.php"
-  participant DB as "Database (vtiger_*)"
+  participant UI as modules/Leads/LeadConvertToEntities.php
+  participant CL as include/Webservices/ConvertLead.php
+  participant U as include/Webservices/Utils.php
+  participant DB as Database vtiger_*
 
-  UI->>CL: "vtws_convertlead(entityValues, current_user)"
-  CL->>DB: "SELECT converted FROM vtiger_leaddetails WHERE converted=1 AND leadid=?"
-  CL->>CL: "vtws_retrieve(leadId)"
-  CL->>DB: "SELECT/INSERT Accounts/Contacts/Potentials (vtws_create)"
-  CL->>DB: "INSERT vtiger_contpotentialrel (optional)"
-  CL->>U: "vtws_transferLeadRelatedRecords(leadId, relatedId, targetModule)"
-  U->>DB: "Copy vtiger_senotesrel / vtiger_seattachmentsrel"
-  U->>DB: "Copy vtiger_seproductsrel"
-  U->>DB: "Copy vtiger_crmentityrel"
-  U->>DB: "Migrate campaignleadrel to campaignaccountrel/campaigncontrel"
-  CL->>U: "vtws_getRelatedActivities(leadId, accountId, contactId, relatedId)"
-  U->>DB: "Read+delete vtiger_seactivityrel; insert into vtiger_seactivityrel/vtiger_cntactivityrel"
-  CL->>DB: "UPDATE vtiger_leaddetails SET converted=1"
-  CL->>DB: "DELETE vtiger_campaignleadrel; DELETE vtiger_tracker"
-  CL->>DB: "UPDATE vtiger_crmentity modifiedtime/modifiedby (lead)"
-  CL-->>UI: "Return created entity IDs"
+  UI->>CL: vtws_convertlead(entityValues, current_user)
+  CL->>DB: SELECT converted FROM vtiger_leaddetails WHERE converted=1 AND leadid=?
+  CL->>CL: vtws_retrieve leadId
+  CL->>DB: SELECT INSERT Accounts Contacts Potentials vtws_create
+  CL->>DB: INSERT vtiger_contpotentialrel optional
+  CL->>U: vtws_transferLeadRelatedRecords leadId relatedId targetModule
+  U->>DB: Copy vtiger_senotesrel vtiger_seattachmentsrel
+  U->>DB: Copy vtiger_seproductsrel
+  U->>DB: Copy vtiger_crmentityrel
+  U->>DB: Migrate campaignleadrel to campaignaccountrel campaigncontrel
+  CL->>U: vtws_getRelatedActivities leadId accountId contactId relatedId
+  U->>DB: Read delete vtiger_seactivityrel insert vtiger_seactivityrel vtiger_cntactivityrel
+  CL->>DB: UPDATE vtiger_leaddetails SET converted=1
+  CL->>DB: DELETE vtiger_campaignleadrel DELETE vtiger_tracker
+  CL->>DB: UPDATE vtiger_crmentity modifiedtime modifiedby lead
+  CL-->>UI: Return created entity IDs
 ```
 
 ### 5.5 Duplicate merge workflow (`modules/Leads/ProcessDuplicates.php`)
