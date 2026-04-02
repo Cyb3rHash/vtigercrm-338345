@@ -97,14 +97,14 @@ flowchart LR
   con["Contact\n(Contacts: vtiger_contactdetails)"]
   pot["Opportunity\n(Potentials: vtiger_potential)"]
 
-  con -->| "accountid" | acc
-  pot -->| "related_to (Account or Contact)" | acc
-  pot -->| "related_to (Account or Contact)" | con
-  con <-->| "vtiger_contpotentialrel" | pot
+  con -->|accountid| acc
+  pot -->|related_to (Account)| acc
+  pot -->|related_to (Contact)| con
+  con <--> |vtiger_contpotentialrel| pot
 
-  lead -.->| "convert to" | acc
-  lead -.->| "convert to" | con
-  lead -.->| "convert to" | pot
+  lead -.->|convert to| acc
+  lead -.->|convert to| con
+  lead -.->|convert to| pot
 ```
 
 ## 4. How Saves, Links, and Deletes Cause Cross-Module Effects
