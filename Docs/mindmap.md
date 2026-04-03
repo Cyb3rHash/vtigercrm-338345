@@ -1,0 +1,189 @@
+# vtiger CRM System Mind Map (Hierarchical)
+
+## Legend
+
+This document is a system mind map expressed as a hierarchical bullet list. Each node represents a module, submodule, or subsystem. Relationships are expressed inline using phrases such as “routes to”, “includes”, “uses”, and “persists to”.
+
+## Mind map
+
+- vtiger CRM (monolithic PHP application; repository root under `vtigercrm-338345/`)
+  - HTTP entrypoint and request routing
+    - `index.php` (main web UI entrypoint)
+      - It redirects to `install.php` when `config.inc.php` is missing or the database config is not finalized.
+      - It loads core utilities early via `include/utils/utils.php` and then loads configuration via `config.inc.php` and optional overrides via `config_override.php`.
+      - It initializes logging via `include/logging.php` and obtains loggers via `LoggerManager::getLogger(...)`.
+      - It implements the main “module/action” router by including `modules/<module>/<action>.php`, after validating that the module directory and action file exist.
+      - It delegates authentication to the Users module by including `modules/Users/Login.php` when there is no authenticated session.
+      - It enforces authorization checks by calling `isPermitted(...)` (loaded from `include/utils/UserInfoUtil.php`) unless the action/module combination is explicitly excluded from security checks.
+      - It uses the entity framework for detail views by calling `CRMEntity::getInstance($currentModule)` so that record access can be tracked via `track_view(...)`.
+      - It uses UI grouping (“Parent Tabs”) by calling `getParentTabFromModule(...)` to determine the active top-level UI category.
+  - Installation and setup
+    - `install.php` (installation wizard entrypoint)
+      - It loads the database abstraction library via `adodb/adodb.inc.php` and uses install-time utilities from `include/install/resources/utils.php`.
+      - It chooses a step file under `install/` (for example, `welcome.php` or `BuildInstallation.php`) and includes it after checking file access via `Common_Install_Wizard_Utils::checkFileAccessForInclusion(...)`.
+      - It reads placeholders from `config.db.php` (for example, `_DBC_SERVER_`) to drive installation-time database configuration.
+  - Background jobs and schedulers
+    - `vtigercron.php` (cron runner entrypoint)
+      - It loads the cron framework via `vtlib/Vtiger/Cron.php`.
+      - It either runs a specific cron “service” (`Vtiger_Cron::getInstance($_REQUEST['service'])`) or runs all enabled tasks (`Vtiger_Cron::listAllActiveInstances()`).
+      - For each task, it uses `getHandlerFile()` to locate the PHP handler, checks file access, and then `require_once` loads the handler file.
+    - `vtlib/Vtiger/Cron.php` (cron task framework)
+      - It persists cron task configuration into the database table `vtiger_cron_task`.
+      - It creates the schema for `vtiger_cron_task` on demand using `Vtiger_Utils::CreateTable(...)` if the table does not exist.
+      - It models each cron task with fields such as name, handler file, frequency, status, last start/end timestamps, and module ownership.
+      - It supports task lifecycle methods such as `markRunning()`, `markFinished()`, and `hadTimedout()`.
+  - APIs and integration entrypoints
+    - JSON Webservice API
+      - `webservice.php` (webservice entrypoint)
+        - It requires configuration via `config.inc.php`, sets up sessions via `include/Webservices/SessionManager.php`, and dispatches operations via `include/Webservices/OperationManager.php`.
+        - It parses the request parameter `operation`, normalizes it, and uses `OperationManager` to sanitize inputs, include operation handlers, and run the operation.
+        - It returns JSON responses using `Zend_Json` (required as `include/Zend/Json.php`).
+        - It uses the same user identity as the main app by reading `authenticatedUserId` from the webservice session state, then loading the user via `Users()->retrieveCurrentUserInfoFromFile(...)`.
+      - `vtlib/Vtiger/Webservice.php` (vtlib wrapper for webservice initialization)
+        - It provides `initialize($moduleInstance)` and `uninitialize($moduleInstance)` which call functions such as `vtws_addDefaultModuleTypeEntity(...)` when available.
+    - SOAP services
+      - `vtigerservice.php` (SOAP multiplexer entrypoint)
+        - It routes based on `?service=...` to a specific file under `soap/`, including:
+          - `soap/vtigerolservice.php` (Outlook)
+          - `soap/customerportal.php` (Customer Portal)
+          - `soap/webforms.php` (Webforms)
+          - `soap/firefoxtoolbar.php` (Firefox toolbar)
+          - `soap/wordplugin.php` (Word plugin)
+          - `soap/thunderbirdplugin.php` (Thunderbird extension)
+  - Core platform services (used across most modules)
+    - Database and persistence
+      - `include/database/PearDatabase.php` (primary DB abstraction used throughout vtiger)
+        - It wraps ADODB by including `adodb/adodb.inc.php` and uses ADODB schema tools via `adodb/adodb-xmlschema.inc.php`.
+        - It centralizes query execution through `query(...)` and prepared query execution through `pquery(...)`.
+        - It can translate prepared statements to executable SQL via `convert2Sql(...)` (for example when `avoidPreparedSql` is enabled).
+        - It includes performance preferences via `config.performance.php` and exposes them through `PerformancePrefs`.
+        - It optionally caches select query results via `PearDatabaseCache`.
+        - It maintains a global singleton instance via `PearDatabase::getInstance()` and the global `$adb`.
+    - Entity framework (the “model” layer)
+      - `data/CRMEntity.php` (base class for vtiger entities)
+        - It includes key shared dependencies, including `include/utils/utils.php`, `include/utils/UserInfoUtil.php`, and `include/Zend/Json.php`.
+        - It provides `CRMEntity::getInstance($module)` which:
+          - Resolves module class name conventions, including special handling for `Calendar`/`Events` (mapped to the `Activity` entity under the `Calendar` module).
+          - Loads the module class by requiring `modules/<module>/<ClassName>.php` when the class is not already defined.
+          - Returns an instantiated entity object (`$focus`) for use by controllers (for example, detail, edit, save, and related list actions).
+        - It provides the save lifecycle:
+          - `save($module_name, ...)` triggers events (`VTEventsManager`) before and after saving.
+          - `saveentity(...)` writes to `vtiger_crmentity` and to module tables and then calls module-specific `save_module(...)`.
+        - It provides relationships between modules:
+          - `save_related_module(...)` creates cross-module links in `vtiger_crmentityrel`.
+          - It uses `vtiger_senotesrel` as a specialized relation table for Documents (`$with_module == 'Documents'`).
+          - `delete_related_module(...)` removes these links, again handling Documents specially.
+          - `get_related_list(...)` is the generic related list implementation used when a module does not provide a specialized related list function.
+        - It provides record lifecycle operations such as `trash(...)`, `restore(...)`, and “unlink dependencies” logic for cleaning up or preserving relationships.
+    - UI grouping and navigation configuration
+      - `parent_tabdata.php` (Parent Tabs)
+        - It defines the top-level UI group labels through `$parent_tab_info_array`.
+        - It defines the mapping of parent tabs to module tab IDs through `$parent_child_tab_rel_array`.
+      - `tabdata.php` (module tab registry snapshot)
+        - It maps module names to tab IDs in `$tab_info_array` (for example, `Leads => 7`, `Accounts => 6`).
+        - It stores per-tab metadata like ownership (`$tab_ownedby_array`) and action IDs (`$action_id_array` / `$action_name_array`).
+  - vtlib (extension and customization framework)
+    - Menu and UI grouping management
+      - `vtlib/Vtiger/Menu.php`
+        - It manages menu groupings (Parent Tabs) stored in database tables like `vtiger_parenttab` and `vtiger_parenttabrel`.
+        - It can add and remove modules from parent tabs and then synchronizes the changes into a flat file using `create_parenttab_data_file()`.
+    - Module packaging and lifecycle
+      - `vtlib/Vtiger/PackageExport.php`
+        - It exports a module as a zip package, including `modules/<ModuleName>/`, templates under `Smarty/templates/modules/<ModuleName>/`, and cron handlers under `cron/modules/<ModuleName>/`.
+        - It writes and includes a manifest (`manifest.xml`) that contains tables, blocks/fields, custom views, sharing access, events, actions, related lists, custom links, and cron tasks.
+      - `vtlib/Vtiger/PackageImport.php`
+        - It imports a module package by unzipping selected directories into:
+          - `modules/<ModuleName>/`
+          - `Smarty/templates/modules/<ModuleName>/` (from package `templates/`)
+          - `cron/modules/<ModuleName>/` (from package `cron/`)
+        - It configures module metadata in the database using `Vtiger_Module` APIs (and related vtlib classes) and wires the module into:
+          - Parent tab menu relationships via `Vtiger_Menu::getInstance(...)->addModule(...)`.
+          - Related lists, actions/tools, custom links, events, cron tasks, and webservice support (`$moduleInstance->initWebservice()`).
+        - It can register cron tasks via `Vtiger_Cron::register(...)` using details from the package manifest.
+  - Application modules (functional features)
+    - Module controllers and routing
+      - All functional modules follow the routing convention `modules/<ModuleName>/<Action>.php`, where `<Action>` is derived from `index.php` request parameters `module` and `action`.
+      - Entity modules typically have an entity class under `modules/<ModuleName>/<ModuleName>.php` (or `Activity.php` for Calendar).
+    - UI groupings (“Parent Tabs”) and the modules they contain
+      - My Home Page (`parent_tabdata.php`: id 1)
+        - Home (`tabdata.php`: `Home => 3`; code under `modules/Home/`)
+        - Calendar (`tabdata.php`: `Calendar => 9`; code under `modules/Calendar/`)
+        - Webmails (`tabdata.php`: `Webmails => 28`; code under `modules/Webmails/`)
+      - Marketing (`parent_tabdata.php`: id 2)
+        - Campaigns (`Campaigns => 26`; `modules/Campaigns/`)
+        - Accounts (`Accounts => 6`; `modules/Accounts/`)
+        - Contacts (`Contacts => 4`; `modules/Contacts/`)
+        - Webmails (`Webmails => 28`; `modules/Webmails/`)
+        - Leads (`Leads => 7`; `modules/Leads/`)
+        - Calendar (`Calendar => 9`; `modules/Calendar/`)
+        - Documents (`Documents => 8`; `modules/Documents/`)
+      - Sales (`parent_tabdata.php`: id 3)
+        - Leads (`Leads => 7`; `modules/Leads/`)
+        - Accounts (`Accounts => 6`; `modules/Accounts/`)
+        - Contacts (`Contacts => 4`; `modules/Contacts/`)
+        - Potentials (`Potentials => 2`; `modules/Potentials/`)
+        - Quotes (`Quotes => 20`; `modules/Quotes/`)
+        - SalesOrder (`SalesOrder => 22`; `modules/SalesOrder/`)
+        - Invoice (`Invoice => 23`; `modules/Invoice/`)
+        - Products (`Products => 14`; `modules/Products/`)
+        - PriceBooks (`PriceBooks => 19`; `modules/PriceBooks/`)
+        - Documents (`Documents => 8`; `modules/Documents/`)
+        - Calendar (`Calendar => 9`; `modules/Calendar/`)
+      - Support (`parent_tabdata.php`: id 4)
+        - HelpDesk (`HelpDesk => 13`; `modules/HelpDesk/`)
+        - Faq (`Faq => 15`; `modules/Faq/`)
+        - Accounts (`Accounts => 6`; `modules/Accounts/`)
+        - Contacts (`Contacts => 4`; `modules/Contacts/`)
+        - Products (`Products => 14`; `modules/Products/`)
+        - Documents (`Documents => 8`; `modules/Documents/`)
+        - Webmails (`Webmails => 28`; `modules/Webmails/`)
+        - Calendar (`Calendar => 9`; `modules/Calendar/`)
+      - Analytics (`parent_tabdata.php`: id 5)
+        - Dashboard (`Dashboard => 1`; `modules/Dashboard/`)
+        - Reports (`Reports => 25`; `modules/Reports/`)
+      - Inventory (`parent_tabdata.php`: id 6)
+        - Products (`Products => 14`; `modules/Products/`)
+        - Vendors (`Vendors => 18`; `modules/Vendors/`)
+        - PriceBooks (`PriceBooks => 19`; `modules/PriceBooks/`)
+        - PurchaseOrder (`PurchaseOrder => 21`; `modules/PurchaseOrder/`)
+        - SalesOrder (`SalesOrder => 22`; `modules/SalesOrder/`)
+        - Quotes (`Quotes => 20`; `modules/Quotes/`)
+        - Invoice (`Invoice => 23`; `modules/Invoice/`)
+      - Tools (`parent_tabdata.php`: id 7)
+        - Rss (`Rss => 24`; `modules/Rss/`)
+        - Portal (`Portal => 27`; `modules/Portal/`)
+        - Documents (`Documents => 8`; `modules/Documents/`)
+      - Settings (`parent_tabdata.php`: id 8)
+        - Users (`Users => 29`; `modules/Users/`)
+        - Settings UI and administration logic is implemented under `modules/Settings/` and other settings-related submodules, even when it is not listed in `tabdata.php` as a regular tabbed module.
+    - Cross-module relationships (implemented in the entity layer and module-specific related lists)
+      - Relationship storage
+        - Generic cross-entity relationships are stored in `vtiger_crmentityrel` and are managed by `CRMEntity::save_related_module(...)` and `CRMEntity::delete_related_module(...)`.
+        - Document relationships are stored in `vtiger_senotesrel` (special-cased in `CRMEntity` when `$with_module == 'Documents'`).
+      - Common flows (expressed at the system level)
+        - Leads are designed to connect to downstream sales entities (Accounts, Contacts, and Potentials) through conversion and related entity linking logic (module-specific controllers build on the shared relationship primitives in `CRMEntity`).
+        - Inventory documents form a pipeline of related entities that are commonly linked through relations and module logic, including Quotes, Sales Orders, Purchase Orders, and Invoices.
+        - Support records (HelpDesk) are designed to relate to Accounts and Contacts and to link to Documents/Attachments, leveraging shared relationship infrastructure.
+  - Configuration and runtime tuning
+    - `config.db.php`
+      - It is a template-like file containing placeholders used by the installer to generate a working runtime configuration.
+    - `config.performance.php`
+      - It provides performance knobs consumed by `include/database/PearDatabase.php` through `PerformancePrefs`, including SQL logging settings and various list/detail view tuning flags.
+  - Third-party and bundled libraries (selected, as present in the repository tree)
+    - `adodb/` (database abstraction used by `PearDatabase`)
+    - `Smarty/` and `Smarty_setup.php` (templating engine and vtiger-specific setup; templates live under `Smarty/templates/`)
+    - `log4php/` and `log4php.debug/` (logging framework used by `include/logging.php` and by `PearDatabase` / `index.php`)
+    - `include/ckeditor/` (rich text editor)
+    - `include/tcpdf/` and `include/fpdf/` (PDF generation stacks)
+    - `include/htmlpurifier/` (HTML sanitization)
+    - `include/nusoap/` and `soap/` (SOAP service implementations)
+    - `kcfinder/` (browser file manager integrated with uploads)
+    - `include/jquery/`, `include/prototype-1.4.0/`, `include/scriptaculous/`, and `jscalendar/` (client-side libraries used by the UI)
+  - Persistent and generated data directories (selected, as present in the repository tree)
+    - `cache/` (runtime caches, including image and upload-related subdirectories)
+    - `storage/` (application storage area; usage depends on runtime configuration and features)
+    - `user_privileges/` (generated permission files and audit trail configuration referenced by `index.php`)
+    - `cron/` (cron module handlers and language resources, used alongside `vtigercron.php`)
+    - `modules/` (feature modules and vtlib-managed extensions)
+    - `include/` (core shared code: DB, utilities, webservice framework, third-party embeds)
+    - `vtlib/` (extension framework: module install/packaging/menu/events/cron/webservice hooks)
