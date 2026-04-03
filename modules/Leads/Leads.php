@@ -607,6 +607,147 @@ class Leads extends CRMEntity {
 		}
 	}
 
+	// PUBLIC_INTERFACE
+	/**
+	 * Compute a simple default lead score (0-100) based on the presence/quality of common lead fields.
+	 *
+	 * This score is computed on-the-fly and is NOT persisted to the database (no schema changes).
+	 * Intended to provide a reasonable default that can be refined/overridden by custom logic later.
+	 *
+	 * Weights (total 100):
+	 * - Email: 20
+	 * - Phone or Mobile: 15
+	 * - Company: 15
+	 * - Website: 10
+	 * - Lead Source: 10
+	 * - Lead Status: 10
+	 * - Industry: 10
+	 * - Annual Revenue: 5
+	 * - Rating: 3
+	 * - Designation: 2
+	 *
+	 * @param mixed $leadId Optional lead id. If provided and $leadData is not provided, the record will be loaded.
+	 * @param array $leadData Optional associative array of lead field values (typically $focus->column_fields).
+	 * @return int An integer score between 0 and 100 (inclusive).
+	 */
+	function computeLeadScore($leadId = null, $leadData = null) {
+		// Resolve the data source (prefer explicit $leadData; otherwise use this object's column_fields).
+		if ($leadData === null) {
+			// If a lead id is provided, load the record into this entity.
+			// Note: This does not persist any score; it only loads data for computation.
+			if (!empty($leadId)) {
+				$this->id = $leadId;
+				$this->retrieve_entity_info($leadId, 'Leads');
+				$this->id = $leadId;
+			}
+			$leadData = $this->column_fields;
+		}
+
+		if (!is_array($leadData)) {
+			$leadData = Array();
+		}
+
+		$score = 0;
+
+		// Email (20)
+		if ($this->_leadScoreIsProvided($this->_leadScoreGetField($leadData, 'email'))) {
+			$score += 20;
+		}
+
+		// Phone or Mobile (15)
+		$phone = $this->_leadScoreGetField($leadData, 'phone');
+		$mobile = $this->_leadScoreGetField($leadData, 'mobile');
+		if ($this->_leadScoreIsProvided($phone) || $this->_leadScoreIsProvided($mobile)) {
+			$score += 15;
+		}
+
+		// Company (15)
+		if ($this->_leadScoreIsProvided($this->_leadScoreGetField($leadData, 'company'))) {
+			$score += 15;
+		}
+
+		// Website (10)
+		if ($this->_leadScoreIsProvided($this->_leadScoreGetField($leadData, 'website'))) {
+			$score += 10;
+		}
+
+		// Lead Source (10)
+		if ($this->_leadScoreIsProvided($this->_leadScoreGetField($leadData, 'leadsource'))) {
+			$score += 10;
+		}
+
+		// Lead Status (10)
+		if ($this->_leadScoreIsProvided($this->_leadScoreGetField($leadData, 'leadstatus'))) {
+			$score += 10;
+		}
+
+		// Industry (10)
+		if ($this->_leadScoreIsProvided($this->_leadScoreGetField($leadData, 'industry'))) {
+			$score += 10;
+		}
+
+		// Annual Revenue (5) - count as present if numeric and > 0
+		$annualRevenue = $this->_leadScoreGetField($leadData, 'annualrevenue');
+		$annualRevenueNorm = trim((string)$annualRevenue);
+		if ($annualRevenueNorm !== '' && is_numeric($annualRevenueNorm) && floatval($annualRevenueNorm) > 0) {
+			$score += 5;
+		}
+
+		// Rating (3)
+		if ($this->_leadScoreIsProvided($this->_leadScoreGetField($leadData, 'rating'))) {
+			$score += 3;
+		}
+
+		// Designation (2)
+		if ($this->_leadScoreIsProvided($this->_leadScoreGetField($leadData, 'designation'))) {
+			$score += 2;
+		}
+
+		// Clamp to [0, 100]
+		if ($score < 0) $score = 0;
+		if ($score > 100) $score = 100;
+
+		return intval($score);
+	}
+
+	/**
+	 * Internal helper: safely fetch a field from the provided lead data array.
+	 *
+	 * @param array $leadData
+	 * @param string $fieldName
+	 * @return string
+	 */
+	function _leadScoreGetField($leadData, $fieldName) {
+		if (is_array($leadData) && isset($leadData[$fieldName])) {
+			return $leadData[$fieldName];
+		}
+		return '';
+	}
+
+	/**
+	 * Internal helper: determine whether a value should be treated as "provided" for scoring purposes.
+	 *
+	 * Handles common vtiger picklist empty markers like '--None--'.
+	 *
+	 * @param mixed $value
+	 * @return boolean
+	 */
+	function _leadScoreIsProvided($value) {
+		if ($value === null) return false;
+
+		// Preserve numeric 0 as "provided" (though most lead fields are strings/picklists).
+		if (is_int($value) || is_float($value)) return true;
+
+		$str = trim((string)$value);
+		if ($str === '') return false;
+
+		// Common placeholders in vtiger picklists / UI
+		$lower = strtolower($str);
+		if ($lower === '--none--' || $lower === 'none' || $lower === 'null') return false;
+
+		return true;
+	}
+
 }
 
 ?>
