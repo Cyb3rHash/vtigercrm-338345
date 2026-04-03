@@ -114,9 +114,9 @@ class Contacts_CallRelatedList
 <<script>> Contacts_DetailViewAjax
 <<script>> Contacts_CallRelatedList
 
-Contacts_EditView ..> CRMEntity : CRMEntity::getInstance()
-Contacts_DetailViewAjax ..> CRMEntity : CRMEntity::getInstance()
-Contacts_CallRelatedList ..> CRMEntity : CRMEntity::getInstance()
+Contacts_EditView ..> CRMEntity : CRMEntity.getInstance()
+Contacts_DetailViewAjax ..> CRMEntity : CRMEntity.getInstance()
+Contacts_CallRelatedList ..> CRMEntity : CRMEntity.getInstance()
 ```
 
 ## Notes on relationships
