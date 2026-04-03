@@ -159,6 +159,31 @@ It also overrides relationship behavior:
 
 The method `transferRelatedRecords($module, $transferEntityIds, $entityId)` is used to move related records from duplicate leads onto a “primary” lead (for example, in a merge duplicates flow). It updates multiple relation tables (activities, notes, attachments, products, campaigns) while avoiding duplicates.
 
+### On-the-fly lead scoring (`Leads::computeLeadScore`)
+
+The Leads entity class includes an on-the-fly lead scoring function:
+
+- `Leads::computeLeadScore($leadId = null, $leadData = null): int`
+
+This function computes a simple default score from `0` to `100` based on whether common lead fields are present and “meaningful”. It is intentionally computed at runtime and is not persisted to the database, which means it does not add schema fields and it does not automatically change exports, list views, or webservice responses.
+
+The function can be used in two ways. If you pass a `$leadData` associative array (typically a `CRMEntity::$column_fields` array), it will score those values directly. If you pass a `$leadId` and omit `$leadData`, it will load the lead record into the entity (`retrieve_entity_info($leadId, 'Leads')`) and then compute the score from the loaded `column_fields`.
+
+The current default weighting implemented in `modules/Leads/Leads.php` is:
+
+- Email: 20
+- Phone or Mobile: 15
+- Company: 15
+- Website: 10
+- Lead Source: 10
+- Lead Status: 10
+- Industry: 10
+- Annual Revenue: 5 (counts only if numeric and greater than 0)
+- Rating: 3
+- Designation: 2
+
+For “provided” checks, the helper treats empty strings and common vtiger placeholder values (such as `--None--`) as not provided.
+
 ## Key workflows (web UI)
 
 ### Creating and editing a lead

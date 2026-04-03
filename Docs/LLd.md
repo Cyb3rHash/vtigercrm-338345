@@ -162,6 +162,12 @@ Although many operations are generic, Leads overrides certain relationship behav
 
 This is used by the merge-duplicates flow (`modules/Leads/ProcessDuplicates.php`).
 
+#### 3.2.4 On-the-fly lead scoring
+
+The Leads entity class includes a simple scoring helper, `computeLeadScore($leadId = null, $leadData = null)`, which returns an integer in the range `0` to `100`. The score is computed at runtime from commonly populated lead fields and is not persisted to the database. This keeps the feature schema-free and avoids changing standard vtiger behaviors (such as exports or list views) unless additional code explicitly uses the score.
+
+The method supports two input modes. If `$leadData` is provided, it is treated as the source of truth (typically a `CRMEntity::$column_fields` array). If `$leadData` is not provided and `$leadId` is provided, the method loads the lead record via `retrieve_entity_info($leadId, 'Leads')` and scores the loaded `column_fields`. Internally, the implementation uses helper functions to normalize “provided” checks (including filtering placeholder values like `--None--`) and applies a fixed weighting per field, clamping the final result to `[0, 100]`.
+
 ### 3.3 `ConvertLeadUI` (conversion UI helper)
 
 `modules/Leads/ConvertLeadUI.php` defines a PHP class dedicated to populating and validating data for the Convert Lead UI.
