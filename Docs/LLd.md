@@ -45,6 +45,32 @@ For Leads, the key files are:
 - Framework base entity (save/retrieve/delete/event triggering):
   - `data/CRMEntity.php`
 
+## 2.1 Runtime routing and action invocation (`index.php`)
+
+At runtime, requests are routed through the front controller `index.php`, which loads the corresponding module action script (for example `modules/Leads/Save.php`) based on `module=<ModuleName>` and `action=<ActionName>`. This routing is not just string concatenation; the front controller contains concrete checks that influence Leads behavior and should be considered part of the module’s “real” execution flow.
+
+In particular, `index.php` implements:
+
+1. A path traversal / file disclosure mitigation by scanning `modules/` and `modules/<module>/` and rejecting requests where the module directory does not exist or where the requested `<action>.php` file is not present.
+2. A basic record-id validation check that rejects non-numeric `record` values for most requests.
+3. A session authentication gate that forces unauthenticated users into `modules/Users/Login.php`.
+4. A permission gate using `isPermitted($module, $action, $record?)` (with Ajax-specific handling for the “effective action”).
+5. “Skip header/footer” behavior for many action families (Save/Delete/Popup/ProcessDuplicates/MassEditSave/etc.), which affects output shape (full page vs. popup vs. redirect-only response). This is relevant because several Leads flows (Convert Lead submit, merge duplicates, mass edit) are designed to be “headerless” scripts.
+
+The diagram below is a code-grounded view of the dispatch pipeline that every Leads action script passes through.
+
+```mermaid
+flowchart TD
+  B["Browser"] --> I["index.php (front controller)"]
+  I --> MODCHK["Validate module exists under modules/"]
+  MODCHK --> ACTCHK["Validate action file modules/<module>/<action>.php exists"]
+  ACTCHK --> RECCHK["Validate record is numeric when present"]
+  RECCHK --> AUTH["Session authentication check"]
+  AUTH --> PERM["Permission gate: isPermitted(module, action, record?)"]
+  PERM --> INC["include modules/<module>/<action>.php"]
+  INC --> OUT["Response: HTML render or 302 redirect or popup JS"]
+```
+
 ## 3. Core classes and responsibilities
 
 ### 3.1 `CRMEntity` (framework base class)
@@ -230,6 +256,94 @@ Settings UI persists mappings by:
 (See `modules/Settings/SaveConvertLead.php`.)
 
 ## 5. Internal workflows (request-to-DB sequences)
+
+### 5.0 Common request routing, authentication, and permission gating (`index.php`)
+
+Every Leads workflow described below is ultimately invoked by `index.php` dispatching to `modules/Leads/<Action>.php`. From an implementation perspective, this means Leads action scripts must be understood in the presence of:
+
+1. The action-file existence checks (`scandir`-based) in `index.php` which hard-fail a request if `modules/Leads/<Action>.php` does not exist.
+2. The authenticated session requirement (`$_SESSION["authenticated_user_id"]`) which reroutes to `modules/Users/Login.php` when missing.
+3. The permission evaluation by `isPermitted($module, $now_action, $record?)`, where `$now_action` can differ for Ajax calls.
+4. The header/footer skipping logic for many action families, which changes the response contract (for example, `ProcessDuplicates` returns popup JavaScript that closes the window, while Save returns a redirect).
+
+Because these gates run before the Leads code, failures can occur “before” Leads logic executes at all. This is why Leads UI flows often assume a valid numeric record id and a logged-in session without restating those checks.
+
+### 5.0.1 EditView workflow (`modules/Leads/EditView.php` + `modules/Vtiger/EditView.php`)
+
+**Entry point**: `index.php?module=Leads&action=EditView[&record=<id>]`
+
+The Leads module does not implement a bespoke edit form controller. Instead, `modules/Leads/EditView.php` is a thin wrapper that includes the generic `modules/Vtiger/EditView.php` implementation, optionally passing through the request parameter `campaignid`.
+
+The generic EditView performs these steps:
+
+1. It instantiates a module entity using `CRMEntity::getInstance($currentModule)` (for Leads, an instance of `Leads`).
+2. When `record` is present, it sets `$focus->mode = 'edit'` and calls `$focus->retrieve_entity_info($record, $currentModule)` to populate `$focus->column_fields`.
+3. When `isDuplicate=true`, it clears `$focus->id` and `$focus->mode` to force insert semantics, but preserves the existing field values for user editing.
+4. When creating a new record (no `record` and not in edit mode), it calls `setObjectValuesFromRequest($focus)` so that “pre-filled” create flows can pass defaults via the request.
+5. It determines the view mode (`getView($focus->mode)`) and computes the edit blocks via `getBlocks($currentModule, $disp_view, $focus->mode, $focus->column_fields)`.
+6. It assigns field validation metadata via `getDBValidationData($focus->tab_name, $tabid)` and calendar/date formatting via `parse_calendardate(...)`.
+7. It performs module sequence numbering pre-checks. When creating new records and the module has a sequence field configured, it assigns “auto-gen on save” text and warns if sequence configuration is invalid.
+
+Finally, `modules/Leads/EditView.php` renders `salesEditView.tpl` rather than a Leads-specific template.
+
+This delegation is important for LLD because it means any “edit/create” UI behavior (block construction, validation metadata, and field dependency picklists) is defined centrally in `modules/Vtiger/EditView.php`, not in the Leads module.
+
+### 5.0.2 Request/parameter contracts (key Leads entry scripts)
+
+The following tables summarize the concrete request parameters that drive behavior in major Leads entry scripts. These are evidenced directly in the scripts’ `$_REQUEST[...]` reads.
+
+#### Save Lead (`modules/Leads/Save.php`)
+
+| Parameter | Required | Meaning in code |
+|---|---|---|
+| `record` | Optional | When present, updates an existing Lead (`$focus->id` set). |
+| `mode` | Optional | When present, used to set `$focus->mode` (typically `edit`). |
+| `<fieldname>` | Optional | Any key matching a Leads `column_fields` entry is copied into `$focus->column_fields[$fieldname]`. |
+| `assigntype` | Required for assignment change | `'U'` uses `assigned_user_id`, `'T'` uses `assigned_group_id`. |
+| `assigned_user_id` / `assigned_group_id` | Conditional | Owner id written to `column_fields['assigned_user_id']`. |
+| `return_module`, `return_action`, `return_id` | Optional | Determines redirect target after save. |
+| `return_viewname`, `pagenumber`, `search_url` | Optional | Preserves list view context after save. |
+| `return_module=Campaigns`, `return_id=<campaignid>` | Optional | Triggers `vtiger_campaignleadrel` delete/insert logic to relate the lead to a campaign while preserving `campaignrelstatusid`. |
+
+#### Convert Lead submit (`modules/Leads/LeadConvertToEntities.php`)
+
+| Parameter | Required | Meaning in code |
+|---|---|---|
+| `record` | Required | Numeric Lead id to be converted. |
+| `entities` | Required | Array of module names indicating which entities to create (`Accounts`, `Contacts`, `Potentials`). |
+| `c_assigntype` | Required | Owner type for created entities (`U` user, else group). |
+| `c_assigned_user_id` / `c_assigned_group_id` | Conditional | Owner id used to build `assignedTo` webservice id. |
+| `transferto` | Optional | Target to receive related records; defaults to `Contacts`. |
+| `accountname`, `industry` | Conditional | Explicit values provided for Accounts entity creation. |
+| `lastname`, `firstname`, `email` | Conditional | Explicit values provided for Contacts entity creation. |
+| `potentialname`, `closingdate`, `sales_stage`, `amount` | Conditional | Explicit values provided for Potentials entity creation. |
+
+#### Merge duplicates (`modules/Leads/ProcessDuplicates.php`)
+
+| Parameter | Required | Meaning in code |
+|---|---|---|
+| `mergemode=mergefields` | Conditional | Renders the merge UI (collects values via `getRecordValues(...)` and displays `MergeFields.tpl`). |
+| `mergemode=mergesave` | Conditional | Saves the chosen primary record and deletes duplicates. |
+| `record` | Required (mergesave) | Primary record id to keep. |
+| `pass_rec` | Required (mergesave) | Comma-separated id list of duplicates (primary id is removed before delete). |
+| `passurl` | Required (mergefields) | Comma-separated ids to compare in UI. |
+
+#### Mass edit (`modules/Leads/MassEditSave.php`)
+
+| Parameter | Required | Meaning in code |
+|---|---|---|
+| `massedit_recordids` | Required | Semicolon-separated record ids to update. |
+| `<fieldname>_mass_edit_check` | Optional | When set, field is updated for that record. |
+| `assigntype`, `assigned_user_id`, `assigned_group_id` | Optional | Updates owner when the `assigned_user_id_mass_edit_check` flag is set. |
+
+#### Relate records (`modules/Leads/updateRelations.php`)
+
+| Parameter | Required | Meaning in code |
+|---|---|---|
+| `parentid` | Required | Lead record id to relate to. |
+| `destination_module` | Required | The module being related (for example `Campaigns`, `Products`, `Documents`). |
+| `idlist` | Optional | Semicolon-separated ids of selected related records. |
+| `entityid` | Optional | Single related record id alternative to `idlist`. |
 
 ### 5.1 Create/Edit Save workflow (`modules/Leads/Save.php`)
 
@@ -436,31 +550,86 @@ Key internal steps and DB interactions:
 10. Error handling / rollback strategy:
    - If a later step fails, the conversion routine attempts to delete created entities (`vtws_delete`) to avoid orphan records.
 
-#### Conversion workflow diagram
+#### Conversion workflow diagrams (UI submit + webservice orchestration + migration)
+
+The first diagram focuses on the concrete call chain from the Leads conversion submit endpoint (`modules/Leads/LeadConvertToEntities.php`) into the webservice conversion routine (`vtws_convertlead`) and the main persistence/migration steps. It includes the explicit account de-duplication branch and the configurable “transfer related records to” choice.
 
 ```mermaid
 sequenceDiagram
-  participant UI as modules/Leads/LeadConvertToEntities.php
-  participant CL as include/Webservices/ConvertLead.php
-  participant U as include/Webservices/Utils.php
-  participant DB as Database vtiger_*
+  participant B as "Browser"
+  participant I as "index.php"
+  participant UI as "LeadConvertToEntities.php"
+  participant CL as "vtws_convertlead (include/Webservices/ConvertLead.php)"
+  participant UT as "Utils migration (include/Webservices/Utils.php)"
+  participant DB as "MySQL database"
 
-  UI->>CL: vtws_convertlead(entityValues, current_user)
-  CL->>DB: SELECT converted FROM vtiger_leaddetails WHERE converted=1 AND leadid=?
-  CL->>CL: vtws_retrieve leadId
-  CL->>DB: SELECT INSERT Accounts Contacts Potentials vtws_create
-  CL->>DB: INSERT vtiger_contpotentialrel optional
-  CL->>U: vtws_transferLeadRelatedRecords leadId relatedId targetModule
-  U->>DB: Copy vtiger_senotesrel vtiger_seattachmentsrel
-  U->>DB: Copy vtiger_seproductsrel
-  U->>DB: Copy vtiger_crmentityrel
-  U->>DB: Migrate campaignleadrel to campaignaccountrel campaigncontrel
-  CL->>U: vtws_getRelatedActivities leadId accountId contactId relatedId
-  U->>DB: Read delete vtiger_seactivityrel insert vtiger_seactivityrel vtiger_cntactivityrel
-  CL->>DB: UPDATE vtiger_leaddetails SET converted=1
-  CL->>DB: DELETE vtiger_campaignleadrel DELETE vtiger_tracker
-  CL->>DB: UPDATE vtiger_crmentity modifiedtime modifiedby lead
-  CL-->>UI: Return created entity IDs
+  B->>I: "POST module=Leads action=LeadConvertToEntities record=<leadid>"
+  I->>UI: "include modules/Leads/LeadConvertToEntities.php"
+  UI->>CL: "vtws_convertlead(entityValues, current_user)"
+
+  CL->>DB: "SELECT converted FROM vtiger_leaddetails WHERE converted=1 AND leadid=?"
+  CL->>CL: "vtws_retrieve(leadId)"
+
+  loop "For each selected entity type (Accounts, Contacts, Potentials)"
+    CL->>DB: "SELECT * FROM vtiger_convertleadmapping"
+    CL->>CL: "Map Lead fields to target fields"
+    CL->>CL: "Fill mandatory fields (default or '????')"
+    alt "Entity is Accounts and name already exists"
+      CL->>DB: "SELECT accountid FROM vtiger_account JOIN vtiger_crmentity WHERE accountname=? AND deleted=0"
+      CL->>CL: "Reuse existing Account id"
+    else "Create entity"
+      CL->>CL: "vtws_create(targetModule, entityObjectValues)"
+    end
+  end
+
+  opt "If Account, Contact, and Potential all exist"
+    CL->>DB: "INSERT INTO vtiger_contpotentialrel(contactid, potentialid)"
+  end
+
+  CL->>UT: "vtws_transferLeadRelatedRecords(leadId, relatedId, transferTarget)"
+  UT->>DB: "INSERT senotesrel and seattachmentsrel rows for relatedId"
+  UT->>DB: "INSERT seproductsrel rows for relatedId"
+  UT->>DB: "INSERT crmentityrel rows for relatedId"
+  UT->>DB: "INSERT campaignaccountrel or campaigncontrel"
+  UT->>UT: "Optional ModComments transfer"
+
+  CL->>UT: "vtws_getRelatedActivities(leadId, accountId, contactId, relatedId)"
+  UT->>DB: "SELECT seactivityrel rows for leadId"
+  UT->>DB: "DELETE seactivityrel rows for leadId"
+  UT->>DB: "INSERT seactivityrel for accountId (tasks/events)"
+  UT->>DB: "INSERT cntactivityrel for contactId (tasks/events)"
+  UT->>DB: "INSERT seactivityrel for relatedId (emails)"
+
+  CL->>DB: "UPDATE vtiger_leaddetails SET converted=1 WHERE leadid=?"
+  CL->>DB: "DELETE FROM vtiger_campaignleadrel WHERE leadid=?"
+  CL->>DB: "DELETE FROM vtiger_tracker WHERE item_id=?"
+  CL->>DB: "UPDATE vtiger_crmentity SET modifiedtime=?, modifiedby=? WHERE crmid=?"
+
+  CL-->>UI: "Return created entity ids (webservice ids)"
+  UI-->>B: "302 redirect to Accounts/Contacts DetailView"
+```
+
+The second diagram decomposes the related-record migration phase into the specific helper functions that run under `vtws_transferLeadRelatedRecords`, which is the main “DB interaction seam” for conversion-related data movement.
+
+```mermaid
+flowchart TB
+  TR["vtws_transferLeadRelatedRecords(leadId, relatedId, seType)"]
+  NA["vtws_getRelatedNotesAttachments"]
+  PR["vtws_saveLeadRelatedProducts"]
+  GR["vtws_saveLeadRelations"]
+  CA["vtws_saveLeadRelatedCampaigns"]
+  CM["vtws_transferComments (optional)"]
+
+  DB1["vtiger_senotesrel and vtiger_seattachmentsrel"]
+  DB2["vtiger_seproductsrel"]
+  DB3["vtiger_crmentityrel"]
+  DB4["vtiger_campaignleadrel to vtiger_campaignaccountrel or vtiger_campaigncontrel"]
+
+  TR --> NA --> DB1
+  TR --> PR --> DB2
+  TR --> GR --> DB3
+  TR --> CA --> DB4
+  TR --> CM
 ```
 
 ### 5.5 Duplicate merge workflow (`modules/Leads/ProcessDuplicates.php`)
@@ -600,6 +769,71 @@ classDiagram
   ConvertLeadUI ..> CRMEntity : "uses permissions/metadata"
 ```
 
+### 7.2 Leads persistence tables (ER view)
+
+This diagram shows the concrete tables that `Leads` declares in `$tab_name` / `$tab_name_index` and therefore participates in via the generic `CRMEntity::saveentity(...)` persistence pipeline.
+
+```mermaid
+erDiagram
+  vtiger_crmentity ||--|| vtiger_leaddetails : "crmid=leadid"
+  vtiger_leaddetails ||--|| vtiger_leadsubdetails : "leadid=leadsubscriptionid"
+  vtiger_leaddetails ||--|| vtiger_leadaddress : "leadid=leadaddressid"
+  vtiger_leaddetails ||--|| vtiger_leadscf : "leadid=leadid"
+```
+
+### 7.3 Save flow (controller + CRMEntity persistence)
+
+This sequence diagram focuses on the concrete “Save” call chain: `modules/Leads/Save.php` maps request fields into `Leads::$column_fields` and then relies on `CRMEntity::save(...)` to persist into `vtiger_crmentity` plus module tables.
+
+```mermaid
+sequenceDiagram
+  participant B as "Browser"
+  participant I as "index.php"
+  participant S as "modules/Leads/Save.php"
+  participant L as "Leads (modules/Leads/Leads.php)"
+  participant E as "CRMEntity (data/CRMEntity.php)"
+  participant DB as "MySQL database"
+
+  B->>I: "POST module=Leads action=Save"
+  I->>S: "include modules/Leads/Save.php"
+  S->>L: "new Leads()"
+  S->>S: "Copy $_REQUEST fields into focus->column_fields"
+  S->>S: "Set assigned_user_id from assigntype"
+  S->>E: "focus->save('Leads')"
+  E->>DB: "INSERT/UPDATE vtiger_crmentity"
+  E->>DB: "INSERT/UPDATE vtiger_leaddetails"
+  E->>DB: "INSERT/UPDATE vtiger_leadsubdetails"
+  E->>DB: "INSERT/UPDATE vtiger_leadaddress"
+  E->>DB: "INSERT/UPDATE vtiger_leadscf"
+  E-->>S: "focus->id"
+  S-->>B: "302 redirect to DetailView (or return_module target)"
+```
+
+### 7.4 Merge duplicates flow (mergesave path)
+
+This diagram captures the mergesave branch in `modules/Leads/ProcessDuplicates.php`, including the explicit “transfer related records” call into `Leads::transferRelatedRecords(...)` and the subsequent `DeleteEntity(...)` loop.
+
+```mermaid
+sequenceDiagram
+  participant B as "Browser"
+  participant I as "index.php"
+  participant PD as "modules/Leads/ProcessDuplicates.php"
+  participant L as "Leads (CRMEntity instance)"
+  participant DB as "MySQL database"
+
+  B->>I: "POST module=Leads action=ProcessDuplicates mergemode=mergesave"
+  I->>PD: "include modules/Leads/ProcessDuplicates.php"
+  PD->>DB: "SELECT count(*) FROM vtiger_crmentity WHERE crmid=? AND deleted=0"
+  PD->>L: "focus->mode='edit'"
+  PD->>L: "setObjectValuesFromRequest(focus)"
+  PD->>L: "focus->save('Leads')"
+  PD->>L: "focus->transferRelatedRecords('Leads', duplicateIds, primaryId)"
+  loop "For each duplicate id"
+    PD->>L: "DeleteEntity('Leads', return_module, focus, duplicateId, '')"
+  end
+  PD-->>B: "Popup script closes window and reloads opener"
+```
+
 ## 8. Known implementation risks and noteworthy details (code-observed)
 
 1. In `include/Webservices/Utils.php::vtws_saveLeadRelations`, the code inserts into `vtiger_crmentityrel` but then checks `$resultNew` for failure without assigning it in that function. This looks like a defect that could mask DB insert failures during relation transfer.
@@ -645,9 +879,12 @@ This document is based primarily on the following implementation files:
 - `modules/Leads/MassEditSave.php`
 - `modules/Leads/updateRelations.php`
 - `modules/Leads/Delete.php`
+- `modules/Vtiger/EditView.php`
+- `modules/Vtiger/ListView.php`
 - `include/Webservices/ConvertLead.php`
 - `include/Webservices/Utils.php`
 - `modules/Settings/LeadCustomFieldMapping.php`
 - `modules/Settings/SaveConvertLead.php`
 - `data/CRMEntity.php`
+- `index.php`
 - `Docs/Leads-Accounts-Contacts-Opportunities-Interactions.md`
