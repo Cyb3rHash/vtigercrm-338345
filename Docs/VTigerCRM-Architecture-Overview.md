@@ -1,165 +1,597 @@
-# vtiger CRM (v5.4.0) Architecture Overview
+# SYSTEM ARCHITECTURE DOCUMENT
 
-## Overview
-This repository contains a monolithic, server-rendered PHP CRM application (vtiger CRM 5.4.0) that runs behind a PHP-capable web server and persists data in a relational database (typically MySQL). The system is organized as a classic vtiger/SugarCRM-style codebase where a central web entrypoint dispatches requests to module-specific PHP scripts under `modules/`, while shared framework services (database abstraction, security utilities, UI helpers, and webservice plumbing) live primarily under `include/`, `data/`, and `vtlib/`.
+System/Programme Name: vtiger CRM (v5.4.0)  
+Organisation: [To be determined]  
+Author: [To be determined]  
+Version: 1.0  
+Date: 2026-04-07  
 
-From an operational point of view, the system has three primary execution modes. It serves interactive browser requests via `index.php`, it exposes a JSON webservice endpoint via `webservice.php`, and it runs scheduled background jobs via `vtigercron.php` (plus individual scripts in `cron/`). Installation and initial database bootstrapping are handled via `install.php` and the `install/` directory.
+Framework alignment: TOGAF ADM · ISO/IEC/IEEE 42010:2011  
 
-## Architecture Diagram
-At a high level, vtiger CRM can be understood as a layered monolith with multiple entrypoints that converge on shared framework services and a shared database.
+Confidentiality notice: This document is intended for internal architecture and engineering use. Distribution and access should be controlled in line with your organisation’s policies.
 
-A useful mental “diagram” is the following set of boxes and arrows:
+## 1. Document Control
 
-1. A “Web Browser” box sends HTTP requests to a “Web Server + PHP runtime” box.
-2. Inside the PHP runtime, requests are dispatched into one of these entrypoints: `index.php` (main UI), `webservice.php` (JSON API), `install.php` (installation wizard), `vtigercron.php` (scheduled jobs), and specialized entrypoints like `Popup.php` and `graph.php`.
-3. Those entrypoints call into “Module Controllers” (scripts under `modules/<ModuleName>/...`) and “Shared Framework Services” (mostly under `include/`, `data/`, and `vtlib/`).
-4. The framework services call the “Database Abstraction Layer” (`include/database/PearDatabase.php`, which wraps ADODB) which reads/writes the “CRM Database” (tables such as `vtiger_version`, webservice metadata tables like `vtiger_ws_operation`, and cron tables like `vtiger_cron_task`).
-5. Static assets and UI templates flow through the templating subsystem (Smarty) and theme resources under `themes/`.
+### 1.1 Version History
 
-The key architectural point is that modules are not separate deployables; they are packages of PHP scripts and entity classes that are invoked by the central entrypoints and share the same runtime process, configuration, and database connection.
+| Version | Date | Author | Change Summary |
+|---|---|---|---|
+| 1.0 | 2026-04-07 | [To be determined] | Regenerated SAD from repository evidence. All architectural statements are grounded in explicit file paths, classes/functions, and/or database tables referenced by the current code. |
 
-## Core Components
-vtiger’s codebase is large, but the major architectural building blocks can be described in terms of entrypoints, routing/dispatch, module structure, shared framework services, persistence, and background execution.
+### 1.2 Review & Approvals
 
-### Web UI entrypoint and dispatcher (`index.php`)
-The primary request dispatcher is `index.php`. It is responsible for starting the PHP session, verifying that the system is installed (by checking for `config.inc.php` and whether database configuration is initialized), checking the installed database version against the code version (`vtigerversion.php` + table `vtiger_version`), and enforcing access control before including the appropriate module action script.
+| Name | Role | Signature | Date |
+|---|---|---|---|
+| [To be determined] | Enterprise Architect | [To be determined] | [To be determined] |
+| [To be determined] | CTO | [To be determined] | [To be determined] |
+| [To be determined] | Security Architect | [To be determined] | [To be determined] |
+| [To be determined] | CIO | [To be determined] | [To be determined] |
 
-In concrete terms, `index.php` reads `module` and `action` from the HTTP request and constructs a module action filepath such as `modules/<module>/<action>.php`. It includes additional special-case dispatch (for example, `Documents` + `DownloadFile`) and contains logic to decide whether to render standard headers/footers or treat the request as a popup/AJAX/download path.
+### 1.3 Distribution
 
-This file therefore acts as both a front controller and a coarse-grained security and request-validation gate.
+| Recipient | Role | Access Level |
+|---|---|---|
+| Engineering team | Developers | Internal |
+| Operations team | System administrators | Internal |
+| Security team | Security engineering | Internal |
 
-### Module layer (`modules/`)
-The `modules/` directory contains the CRM’s functional areas such as Accounts, Contacts, Leads, Calendar, Documents, SalesOrder, PurchaseOrder, Reports, Settings, and many others. Each module typically includes:
-1. One or more “action scripts” (`ListView.php`, `DetailView.php`, `EditView.php`, `Save.php`, `Delete.php`, `*Ajax.php`) that implement controller-like behavior for that page/action.
-2. A module “entity class” (for example `modules/Contacts/Contacts.php`) that represents the module’s domain object and extends the common entity base class.
+### 1.4 Related Documents
 
-From the samples in this repository, module entity classes commonly extend `CRMEntity` and implement module-specific behavior such as related list retrieval, export behavior, and module-specific data operations.
+| Document | Reference | Version | Status |
+|---|---|---|---|
+| System documentation | `vtigercrm-338345/Docs/system_documentation.md` | [To be determined] | Existing |
+| API documentation | `vtigercrm-338345/Docs/API_Documentation.md` | [To be determined] | Existing |
+| API reference | `vtigercrm-338345/Docs/VTigerCRM-API-Reference.md` | [To be determined] | Existing |
+| Data model documentation | `vtigercrm-338345/Docs/data_model.md` | [To be determined] | Existing |
+| High-level design | `vtigercrm-338345/Docs/HLD.md` | [To be determined] | Existing |
+| Low-level design | `vtigercrm-338345/Docs/LLd.md` | [To be determined] | Existing |
 
-### Domain model base (`data/CRMEntity.php`)
-`data/CRMEntity.php` provides the base type that module entity classes inherit from (for example, the Contacts module’s `Contacts` class and similar classes in other modules). This base typically encapsulates shared CRUD patterns, auditing hooks, and shared metadata needed by the vtiger runtime to treat modules uniformly (for example, instantiating module objects in `index.php` via `CRMEntity::getInstance($currentModule)`).
+## 2. Executive Summary
 
-In the web UI flow, this base is a key part of the “model layer” that sits behind the module action scripts.
+### 2.1 Purpose of this Document
 
-### Shared framework services (`include/`)
-The `include/` directory holds shared, cross-module functionality. While the repository has many subareas, the architecture-critical parts are:
+This document defines the authoritative software architecture for the vtiger CRM system as present in this repository, aligned with TOGAF ADM and ISO/IEC/IEEE 42010:2011. The SAD is evidence-based; every architectural claim is backed by explicit references to repository file paths, concrete PHP classes/functions, and/or database tables that are referenced by the implementation.
 
-1. **Utility and security helpers** (`include/utils/utils.php` and other `include/utils/*` files). `index.php`, `Popup.php`, and other entrypoints require `include/utils/utils.php`, indicating it is one of the primary shared foundations for request handling, sanitization (for example, `vtlib_purify()` is used heavily), and general system utilities.
-2. **Query building** (`include/QueryGenerator/QueryGenerator.php`), which supports building module queries in a structured way and is typically used by list views, filters, and reporting.
-3. **List view framework** (`include/ListView/*`), which provides shared list-view rendering and behavior used across modules (for example, popups and list pages use list-view services).
-4. **Webservices framework** (`include/Webservices/*`), described separately below.
+The vtiger CRM version is identified in `vtigercrm-338345/vtigerversion.php` via `$vtiger_current_version = '5.4.0'`.
 
-In architectural terms, `include/` is the application “platform layer” used by all modules.
+### 2.2 Problem Statement
 
-### Database access layer (`include/database/PearDatabase.php` + `adodb/`)
-vtiger uses a database abstraction layer centered around `include/database/PearDatabase.php`, which wraps ADODB (`adodb/adodb.inc.php`) and provides commonly used APIs such as `query`, `pquery` (prepared statement execution), `num_rows`, and `query_result`. It also includes optional performance preferences support via `config.performance.php` and introduces optional in-process query result caching (`PearDatabaseCache`).
+The system is a monolithic, server-rendered PHP CRM that must support interactive browser workflows, programmatic integration, and scheduled background processing while maintaining consistent authorization, data integrity, and safe dynamic inclusion of module code. These concerns are directly visible in the multiple runtime entrypoints (`vtigercrm-338345/index.php`, `vtigercrm-338345/webservice.php`, `vtigercrm-338345/vtigercron.php`, `vtigercrm-338345/install.php`) and the shared platform layer (`vtigercrm-338345/data/CRMEntity.php`, `vtigercrm-338345/include/utils/CommonUtils.php`, `vtigercrm-338345/include/utils/VtlibUtils.php`).
 
-Most code interacts with the database through the global `$adb` object obtained from `PearDatabase::getInstance()` or initialized at the bottom of `PearDatabase.php`. This structure makes the database layer a shared singleton-like service across the monolith.
+### 2.3 Proposed Solution
 
-### Templating and UI rendering (Smarty)
-The system uses Smarty templates and a vtiger-specific Smarty wrapper (for example, `Popup.php` uses `require_once('Smarty_setup.php')` and creates `new vtigerCRM_Smarty`). Templates are stored under `Smarty/templates/` and module templates exist under subfolders such as `Smarty/templates/modules/` and module-specific areas like `Smarty/templates/com_vtiger_workflow/`.
+The implemented architecture is a single deployable PHP codebase that exposes multiple entrypoints, all backed by a shared relational database accessed through `PearDatabase`/ADODB (`vtigercrm-338345/include/database/PearDatabase.php` is referenced by `vtigercrm-338345/vtlib/Vtiger/Cron.php`, and DB access is used throughout `vtigercrm-338345/index.php`, `vtigercrm-338345/data/CRMEntity.php`, and `vtigercrm-338345/include/Webservices/OperationManager.php`). It uses the filesystem for uploads and runtime artifacts (for example, `decideFilePath()` writes under `storage/` in `vtigercrm-338345/include/utils/CommonUtils.php`, and uploads are saved by `CRMEntity::uploadAndSaveFile()` in `vtigercrm-338345/data/CRMEntity.php`).
 
-Themes and static assets are under `themes/`, and the entrypoint (`index.php`) includes standard headers/footers from `modules/Vtiger/header.php` and `modules/Vtiger/footer.php` for normal page requests.
+### 2.4 Strategic Benefits
 
-### Webservice API entrypoint (`webservice.php`) and operation registry (`include/Webservices/*`)
-`webservice.php` exposes a JSON-based API endpoint. Architecturally, it does not hardcode all operations directly; instead, it:
-1. Loads system configuration (`config.inc.php`) and webservice utilities.
-2. Reads the requested operation name from the request (parameter `operation`) and uses `OperationManager` (`include/Webservices/OperationManager.php`) to look up operation metadata in the database (`vtiger_ws_operation` and `vtiger_ws_operation_parameters`).
-3. Starts or adopts a session via `SessionManager` and enforces authentication for non-prelogin operations.
-4. Dynamically `require_once()`s the operation handler path (`handler_path` stored in `vtiger_ws_operation`) and invokes the registered handler method.
-5. Returns JSON output in a consistent “State” wrapper (success/error).
+| Benefit | Description | Measurable Outcome | Stakeholder |
+|---|---|---|---|
+| Single-codebase extensibility | Functional “modules” live under `vtigercrm-338345/modules/` and are dynamically dispatched by `vtigercrm-338345/index.php` (module/action include) and `vtigercrm-338345/include/Ajax/CommonAjax.php` (AJAX include). | Reduced deployment complexity; modules can be added/modified within the same app. | Engineering, Operations |
+| Integration surfaces | JSON Web Services are exposed by `vtigercrm-338345/webservice.php`, with operation dispatch defined by DB metadata (`vtiger_ws_operation`, `vtiger_ws_operation_parameters`) queried by `vtigercrm-338345/include/Webservices/OperationManager.php`. | Faster partner/internal integrations where DB ops are enabled. | Product, Integration teams |
+| Scheduled automation | Background jobs are registered in the database (`vtiger_cron_task`) and executed via `vtigercrm-338345/vtigercron.php` using the framework in `vtigercrm-338345/vtlib/Vtiger/Cron.php`. | Predictable processing for reminders, workflows, reports, etc. | Operations, Business users |
 
-This design makes the webservice layer metadata-driven. New operations can be registered in the database and mapped to handler implementations, while the runtime remains a stable dispatcher.
+## 3. Architecture Framework & Standards
 
-Several core operations (for example, login and query) are implemented in `include/Webservices/` files such as `Login.php`, `Query.php`, and `DescribeObject.php`, and use `VtigerWebserviceObject` (`include/Webservices/VtigerWebserviceObject.php`) to resolve entity metadata (`vtiger_ws_entity`) and instantiate handlers for entity types.
+### 3.1 Architecture Framework
 
-### Cron / scheduled execution (`vtigercron.php` + `vtlib/Vtiger/Cron.php` + `cron/`)
-Background execution is driven by `vtigercron.php`, which can be run in a CLI context (or via an authenticated session with the correct application key). It loads `vtlib/Vtiger/Cron.php` and uses `Vtiger_Cron::listAllActiveInstances()` to retrieve enabled tasks from the database table `vtiger_cron_task`.
+| Attribute | Detail |
+|---|---|
+| Framework Adopted | TOGAF ADM (document structure) and ISO/IEC/IEEE 42010:2011 viewpoint coverage. |
+| ADM Phases | This SAD is produced as an architecture description of the implemented system; separate “As-Is” and “To-Be” are provided, but no future-state roadmap is evidenced in code. |
+| Repository | Source evidence is the vtiger CRM PHP application rooted at `vtigercrm-338345/`. |
+| Modelling Language | Mermaid (diagrams embedded in Markdown). |
+| Diagram Tool | Mermaid-compatible Markdown renderer. |
 
-For each active cron task, `vtigercron.php` checks whether it is runnable based on frequency and last-run timestamps, marks it running, includes the task handler file (`handler_file`), and then marks it finished. `vtlib/Vtiger/Cron.php` is responsible for maintaining the cron task registry and schema, including creating `vtiger_cron_task` if it does not exist and providing registration/deregistration APIs.
+### 3.2 Standards Compliance Register
 
-In addition, the repository contains standalone cron scripts under `cron/` (for example, `cron/intimateTaskStatus.php`) which implement specific scheduled behaviors like sending reminders and notifications. The architecture therefore supports both “registered cron tasks” and “direct cron scripts,” with the registered approach being the preferred centralized mechanism.
+| Standard / Regulation | Domain | Applicability | Compliance Owner |
+|---|---|---|---|
+| ISO/IEC/IEEE 42010:2011 | Architecture description | Applicable to how this SAD is structured and how concerns/viewpoints are addressed. | Enterprise Architect |
+| TOGAF ADM | Enterprise architecture method | Applied as a documentation structure and viewpoint organisation. | Enterprise Architect |
+| PHP runtime version constraint | Platform | `vtigercrm-338345/index.php` enforces PHP >= 5.2.0; `vtigercrm-338345/install.php` enforces PHP >= 5.0. | CTO / Platform owner |
 
-### Installation entrypoint (`install.php` + `install/`)
-Installation is initiated via `install.php`, which:
-1. Ensures required PHP version constraints.
-2. Loads installation language and utility helpers (for example, `include/install/resources/utils.php`).
-3. Chooses which installation step file to include from `install/` based on request parameters, and validates safe inclusion via `Common_Install_Wizard_Utils::checkFileAccessForInclusion()`.
+### 3.3 Architecture Principles
 
-This makes installation a step-driven wizard controlled by files under `install/`.
+| Principle | Statement | Implication / Trade-off |
+|---|---|---|
+| Safe dynamic inclusion | Dynamic inclusion of request-selected files must be constrained to safe paths under the web root, and unsafe directories must be blocked. This is enforced by `checkFileAccessForInclusion()` in `vtigercrm-338345/include/utils/CommonUtils.php` and is used by `vtigercrm-338345/install.php` and `vtigercrm-338345/include/Ajax/CommonAjax.php`. | Enables modular scripting while reducing risk of arbitrary file inclusion. Trade-off is a continued reliance on dynamic includes rather than explicit routing. |
+| Metadata-driven integration | Web service operations are resolved through database metadata (`vtiger_ws_operation`, `vtiger_ws_operation_parameters`) by `OperationManager::fillOperationDetails()` / `fillOperationParameters()` in `vtigercrm-338345/include/Webservices/OperationManager.php`. | Operations can be extended/controlled via DB configuration. Trade-off is operational risk if DB metadata is misconfigured. |
+| Shared entity lifecycle | Core record persistence and lifecycle events are centralized in `CRMEntity::save()` / `saveentity()` in `vtigercrm-338345/data/CRMEntity.php`, with event triggers via `VTEventsManager` (loaded by `vtigercrm-338345/include/events/include.inc`). | Consistent lifecycle hooks across modules. Trade-off is tight coupling to the CRMEntity base class pattern. |
 
-### Extension and module lifecycle framework (`vtlib/`)
-`vtlib/` is vtiger’s internal extension framework. For example, `vtlib/Vtiger/Module.php` exposes APIs to manage module relationships and links, and can initialize or de-initialize webservice support for a module via `Vtiger_Webservice::initialize()` / `uninitialize()`. This layer is what enables module import/export, module activation checks, and other system-level “meta” operations.
+## 4. Scope & Boundaries
 
-## Data Flow
-### Interactive UI request (typical page view)
-A standard browser request flows through the system as follows:
-1. The browser sends an HTTP request with `module=<ModuleName>` and `action=<ActionName>` to `index.php`.
-2. `index.php` starts the session, checks installation configuration, loads `config.inc.php`, validates module/action inputs, and verifies user authentication and permissions.
-3. `index.php` includes the module action script (for example, `modules/Contacts/DetailView.php`).
-4. The module action script uses shared utilities and a module entity instance (typically derived from `CRMEntity`) to query and manipulate data.
-5. Database operations are executed via `$adb` (an instance of `PearDatabase`) which uses ADODB under the hood.
-6. The module action assigns data to Smarty and renders templates, producing HTML output to the browser.
+### 4.1 In Scope
 
-### Webservice request (JSON API)
-A webservice request flows through the system as follows:
-1. A client sends an HTTP request to `webservice.php` with `operation=<name>`, optional session identifier (for example, `sessionName`), and input parameters.
-2. `webservice.php` uses `OperationManager` to resolve operation metadata stored in database tables such as `vtiger_ws_operation` and `vtiger_ws_operation_parameters`.
-3. The session is started (or adopted for `extendsession`), and authentication is enforced for operations that are not marked as pre-login.
-4. The handler implementation is loaded dynamically by path and invoked, returning structured results.
-5. The response is encoded as JSON and returned with a consistent success/error envelope.
+This SAD covers the vtiger CRM PHP application codebase under `vtigercrm-338345/`, including:
 
-### Scheduled job run
-A scheduled task run flows through the system as follows:
-1. A scheduler calls `php vtigercron.php` (CLI) optionally with `?service=<TaskName>` to run a specific task.
-2. `vtigercron.php` enumerates active tasks via `Vtiger_Cron::listAllActiveInstances()`.
-3. For each runnable task, it loads the handler file defined in the database (`vtiger_cron_task.handler_file`) and executes it within the vtiger runtime context.
-4. The cron runtime updates task state in the database by marking running/finished and tracking timestamps.
+- Interactive web UI entrypoint and dispatch (`vtigercrm-338345/index.php`), including module/action inclusion from `vtigercrm-338345/modules/<Module>/<Action>.php`.
+- Installer entrypoint and schema bootstrap (`vtigercrm-338345/install.php`, and schema/table creation invoked by `vtigercrm-338345/install/CreateTables.inc.php` via `$adb->createTables("schema/DatabaseSchema.xml")`).
+- JSON Web Services entrypoint and operation dispatch (`vtigercrm-338345/webservice.php`, `vtigercrm-338345/include/Webservices/OperationManager.php`).
+- Cron runner and cron task framework (`vtigercrm-338345/vtigercron.php`, `vtigercrm-338345/vtlib/Vtiger/Cron.php`).
+- Security-relevant include guards (`vtigercrm-338345/include/utils/CommonUtils.php`) and request sanitization (`vtigercrm-338345/include/utils/VtlibUtils.php`).
+- Templating wrapper for server-rendered UI (`vtigercrm-338345/Smarty_setup.php`).
+- Logging configuration (`vtigercrm-338345/log4php.properties`).
 
-## Integration Points
-vtiger CRM integrates with several internal and external components, mostly as bundled libraries within this repository.
+### 4.2 Out of Scope
 
-1. The database is accessed via `include/database/PearDatabase.php`, which wraps the ADODB library in `adodb/`. The database schema and runtime metadata tables are core to operation resolution (webservice operations), cron task scheduling, and version checks (`vtiger_version`).
-2. The JSON webservice layer uses Zend JSON (`include/Zend/Json.php`) as configured by `include/Webservices/OperationManager.php`.
-3. Templating is handled via Smarty (directory `Smarty/`), with vtiger’s own wrapper used in entrypoints like `Popup.php`.
-4. Scheduled tasks are registered and managed through `vtlib/Vtiger/Cron.php` and executed by `vtigercron.php`.
-5. Optional remote content retrieval exists via the HTTP utility in `class_http/class_http.php` (useful for integrations that fetch external web content), though its usage depends on specific modules.
-6. The repository also contains SOAP-related code under `soap/`, indicating legacy or alternative integration methods beyond the JSON webservice endpoint (the exact SOAP surface is not fully characterized here beyond file presence).
+- Web server configuration (Apache/Nginx virtual host, PHP-FPM config) is not in this repository, so deployment details are described only as assumptions.
+- Database engine provisioning and operational configuration (backups, replication, encryption-at-rest) are not defined in the repository.
+- Future-state re-architecture (microservices, separation of concerns) is not evidenced by source files and is therefore not asserted as “planned” here.
 
-## Technology Stack
-The main technologies evidenced in the repository are:
-1. PHP (with runtime checks in `index.php` and `install.php` for PHP version compatibility).
-2. ADODB for database abstraction (`adodb/`, used by `include/database/PearDatabase.php`).
-3. Smarty templating engine (`Smarty/`), used for server-rendered UI composition.
-4. Zend JSON (`include/Zend/Json.php`) used by the webservice stack.
-5. vtlib (`vtlib/`) as the vtiger module/extension framework.
-6. A variety of bundled third-party libraries and assets (for example, CKEditor under `include/ckeditor/`, HTMLPurifier under `include/htmlpurifier/`, and PDF tooling such as TCPDF under `tcpdf/`), which support rich text editing, sanitization, and document/PDF generation.
+### 4.3 Assumptions
 
-## Key Design Decisions
-vtiger’s architecture reflects a set of consistent design decisions that shape how features are built and extended.
+| ID | Assumption | Impact if Wrong |
+|---|---|---|
+| A-001 | The application is served by a PHP-capable HTTP server that routes requests to `vtigercrm-338345/index.php`, `vtigercrm-338345/webservice.php`, and other entry scripts. | If routing differs, documented entrypoint flows may not match production behavior. |
+| A-002 | A relational database is available and reachable using credentials configured via generated config (template keys in `vtigercrm-338345/config.template.php`). | Without DB connectivity, startup checks in `vtigercrm-338345/index.php` and operation dispatch in `vtigercrm-338345/include/Webservices/OperationManager.php` will fail. |
+| A-003 | CLI execution is available for scheduled jobs, allowing `php vtigercrm-338345/vtigercron.php` to run as intended (CLI gating in `vtigercrm-338345/vtigercron.php`). | Background automation will be unavailable or may require insecure web execution. |
 
-1. The system uses a single front controller (`index.php`) that dispatches into module action scripts by including PHP files. This keeps routing simple but tightly couples request handling to filesystem structure.
-2. Business functionality is modularized by module directories under `modules/`, while shared infrastructure is centralized under `include/`, `data/`, and `vtlib/`. This reduces duplication across modules and allows vtiger to treat modules uniformly through base classes like `CRMEntity`.
-3. The webservice API is metadata-driven. Operations are discovered from database tables (such as `vtiger_ws_operation`) and mapped to handler paths and methods at runtime through `OperationManager`. This makes the webservice surface extensible without changing the dispatcher.
-4. Scheduled jobs are also metadata-driven. Cron tasks are stored in `vtiger_cron_task` and executed dynamically by `vtigercron.php` by loading handler files. This provides a centralized framework for scheduled work.
-5. The database abstraction layer is centralized through a global `$adb` object and a wrapper class (`PearDatabase`). This enables uniform SQL execution and optional performance features (for example, query result caching controlled by performance preferences).
+### 4.4 Constraints
 
-## Scalability & Performance
-vtiger CRM is implemented as a single PHP application and is therefore typically scaled horizontally by running multiple PHP worker processes behind a load balancer, with a shared database and shared storage for uploads/attachments.
+| ID | Constraint | Source | Impact |
+|---|---|---|---|
+| C-001 | UI runtime requires PHP >= 5.2.0. | `vtigercrm-338345/index.php` (PHP version check using `version_compare(phpversion(), '5.2.0')`) | Limits hosting environments and upgrade strategy. |
+| C-002 | Installer requires PHP >= 5.0. | `vtigercrm-338345/install.php` (PHP version check using `version_compare(phpversion(), '5.0')`) | Limits environments for initial installation. |
+| C-003 | Minimum cron frequency is 15 minutes. | `$MINIMUM_CRON_FREQUENCY = 15` in `vtigercrm-338345/config.template.php` and default cron registrations at 900s in `vtigercrm-338345/install/CreateTables.inc.php` (`registerCronTasks()`). | Scheduler configuration should align to avoid missed/late automation. |
+| C-004 | Dynamic includes must be blocked from unsafe directories (`storage`, `cache`, `test`). | `checkFileAccessForInclusion()` in `vtigercrm-338345/include/utils/CommonUtils.php` | Limits how extension code is placed; mitigates inclusion of user-controlled files. |
 
-Performance-related features evidenced in this repository include:
-1. A dedicated performance configuration file (`config.performance.php`) that contains toggles affecting list view computation, record navigation behavior, database charset optimizations, and other runtime settings.
-2. `PearDatabase` includes performance-oriented behaviors such as optional query result caching (`PearDatabaseCache`) and the ability to skip `SET NAMES utf8` if the database default charset is already UTF-8 (`DB_DEFAULT_CHARSET_UTF8`).
-3. List view performance can be influenced by whether page count is computed on each load (`LISTVIEW_COMPUTE_PAGE_COUNT`), which can become expensive on large datasets; the configuration shows this is intended as a tunable knob.
+## 5. Business Context & Drivers
 
-Because the repository does not include deployment descriptors in the files examined here (for example, web server config or process manager configuration), the exact recommended scaling topology is not fully determined from current sources. However, the code and configuration patterns clearly anticipate performance tuning primarily via database efficiency and page-level behaviors rather than microservice decomposition.
+### 5.1 Strategic Drivers
 
-## Security Considerations
-Security in vtiger CRM is implemented in multiple layers, with notable controls visible in the primary dispatcher and in the webservice endpoint.
+The repository and runtime entrypoints indicate a CRM system designed to support:
 
-1. `index.php` includes explicit request validation checks, including path traversal defenses by verifying that `module` is a real directory under `modules/` and that the requested action file exists, and by rejecting module/action strings containing path separators. It also performs permission checks via `isPermitted()` before including module action scripts.
-2. Authentication is session-based for the web UI. If there is no authenticated user in the session, `index.php` forces routing to the login action and includes `modules/Users/Login.php`.
-3. The JSON webservice endpoint (`webservice.php`) enforces authentication by requiring a valid session for non-prelogin operations and by validating login/token behavior through code in `include/Webservices/Login.php`.
-4. Sanitization utilities such as `vtlib_purify()` appear throughout entrypoints (for example, `Popup.php`) and are part of the shared `include/utils/utils.php` toolbox, indicating a consistent strategy of input cleaning before use.
-5. Cron execution (`vtigercron.php`) contains an access gate: it allows execution via CLI or via a session that includes a matching application unique key, reducing the risk of unauthorized web-triggered cron runs.
+- Multi-module CRM record management via module scripts under `vtigercrm-338345/modules/` and shared entity persistence via `vtigercrm-338345/data/CRMEntity.php`.
+- Integration via the JSON Web Services endpoint (`vtigercrm-338345/webservice.php`) and legacy SOAP services (`vtigercrm-338345/vtigerservice.php`).
+- Operational automation via cron (`vtigercrm-338345/vtigercron.php`) and DB-registered tasks (`vtigercrm-338345/vtlib/Vtiger/Cron.php`).
 
-There are additional security implications not fully verifiable from the limited files analyzed (for example, how file uploads are validated and stored, how secrets are managed in `config.inc.php`, and how webservice permissions are enforced across all operations). Those details would typically be confirmed by reviewing `config.inc.php`, module upload handlers, and the full webservice handler set.
+No separate “business requirements” document is present in the evidence used for this SAD, so drivers are derived strictly from observable entrypoints and subsystem responsibilities.
+
+### 5.2 Business Capabilities
+
+| Capability ID | Capability Name | Description | Priority |
+|---|---|---|---|
+| CAP-001 | CRM record management | Create/read/update/delete CRM entities via UI dispatch (`vtigercrm-338345/index.php`) and shared persistence (`vtigercrm-338345/data/CRMEntity.php`). | High |
+| CAP-002 | Integration API | Programmatic CRUD/query via JSON web services (`vtigercrm-338345/webservice.php`, `vtigercrm-338345/include/Webservices/OperationManager.php`). | High |
+| CAP-003 | Automation | Execute scheduled tasks from `vtiger_cron_task` via `vtigercrm-338345/vtigercron.php` and `vtigercrm-338345/vtlib/Vtiger/Cron.php`. | Medium |
+| CAP-004 | Installation/bootstrap | Web-based installer includes step scripts from `vtigercrm-338345/install/` via `vtigercrm-338345/install.php`, and creates tables from `vtigercrm-338345/schema/DatabaseSchema.xml` via `vtigercrm-338345/install/CreateTables.inc.php`. | Medium |
+
+### 5.3 Stakeholders
+
+| Stakeholder | Role | Architecture Concern | Engagement Level |
+|---|---|---|---|
+| Business users | CRM end users | UI usability and correct permission enforcement (`isPermitted()` calls in `vtigercrm-338345/index.php`). | High |
+| Integration developers | API clients | Web service stability and operation availability (DB-driven operations in `vtigercrm-338345/include/Webservices/OperationManager.php`). | High |
+| System administrators | Operators | Installation, upgrades (version check in `vtigercrm-338345/index.php` querying `vtiger_version`), and cron scheduling (`vtigercrm-338345/vtigercron.php`). | High |
+| Security engineers | Security | Safe dynamic include, session gating, and sanitization (`vtigercrm-338345/include/utils/CommonUtils.php`, `vtigercrm-338345/include/utils/VtlibUtils.php`, `vtigercrm-338345/index.php`). | Medium |
+
+## 6. Non-Functional Requirements
+
+### 6.1 Quality Attribute Summary
+
+| NFR ID | Quality Attribute (ISO 25010) | Requirement | Target | Acceptance Test |
+|---|---|---|---|---|
+| NFR-001 | Security | Dynamic include paths must be restricted to prevent inclusion from unsafe directories and outside web root. | Enforced by `checkFileAccessForInclusion()` in `vtigercrm-338345/include/utils/CommonUtils.php`. | Attempt to include a file under `storage/` via installer or AJAX include should fail with “Attempt to access restricted file.” |
+| NFR-002 | Reliability | Cron tasks must not run earlier than their configured frequency. | Enforced by `Vtiger_Cron::isRunnable()` in `vtigercrm-338345/vtlib/Vtiger/Cron.php`. | Run `php vtigercrm-338345/vtigercron.php` twice within less than `frequency`; second run should log “[INFO] not ready to run…”. |
+| NFR-003 | Compatibility | UI runtime must fail fast when PHP version is too old. | PHP >= 5.2.0 gate in `vtigercrm-338345/index.php`. | Run under PHP < 5.2.0 and confirm `phpversionfail.php` flow triggers. |
+| NFR-004 | Observability | Security-relevant actions must be logged to a dedicated security log. | `LoggerManager::getLogger('SECURITY')` in `vtigercrm-338345/index.php` and `log4php.logger.SECURITY` writing to `logs/security.log` in `vtigercrm-338345/log4php.properties`. | Trigger a request and confirm log entry is written to `logs/security.log` (environment permitting). |
+
+## 7. Current State Architecture (As-Is)
+
+### 7.1 As-Is Overview
+
+The current implementation is a monolithic PHP web application with multiple entrypoint scripts that share common libraries, a single database, and a shared filesystem. The primary entrypoints evidenced in the repository are:
+
+- UI front controller: `vtigercrm-338345/index.php`
+- JSON Web Services endpoint: `vtigercrm-338345/webservice.php`
+- Cron runner: `vtigercrm-338345/vtigercron.php`
+- Installer: `vtigercrm-338345/install.php`
+- SOAP dispatcher: `vtigercrm-338345/vtigerservice.php`
+
+Insert current architecture diagram here: [Insert diagram/image].
+
+### 7.2 Current State Pain Points
+
+No explicit “pain points” register is available from current sources. The table below is provided as placeholders to be validated by stakeholders.
+
+| ID | Pain Point | Business Impact | Root Cause |
+|---|---|---|---|
+| PP-001 | [To be determined] | [To be determined] | [To be determined] |
+| PP-002 | [To be determined] | [To be determined] | [To be determined] |
+
+### 7.3 Capability Gap Analysis
+
+No explicit target maturity model is present in current sources. The table below is provided as placeholders.
+
+| Capability | As-Is Maturity | Target Maturity | Gap Severity | Architectural Response |
+|---|---|---|---|---|
+| CAP-001 | [To be determined] | [To be determined] | [To be determined] | [To be determined] |
+| CAP-002 | [To be determined] | [To be determined] | [To be determined] | [To be determined] |
+
+## 8. Target State Architecture (To-Be)
+
+### 8.1 Architecture Vision
+
+No future-state architecture is defined in this repository. For the purposes of this SAD, the implemented architecture evidenced by the current codebase is treated as the baseline “target” for deployment, with improvement opportunities captured in the RAID log.
+
+### 8.2 Formal Architecture Viewpoints
+
+| Viewpoint | Stakeholders | Concerns |
+|---|---|---|
+| Context | Business users, Ops, Integration developers | Entry channels, external dependencies, system boundary. |
+| Logical | Engineering, Security | Major subsystems and responsibilities, trust boundaries. |
+| Process | Engineering, Ops | Request lifecycle, event triggers, cron execution. |
+| Data | Engineering, Ops, Security | Core tables referenced by code and how data is persisted. |
+| Deployment | Ops | Web server, PHP runtime, DB, filesystem; cron scheduling. |
+| Operational | Ops, Security | Logging, audit trails, runtime controls. |
+
+### 8.3 Context View (Level 1)
+
+The system context is defined by how the entrypoint scripts accept interactions and connect to external dependencies.
+
+The UI entrypoint is `vtigercrm-338345/index.php`, the API entrypoint is `vtigercrm-338345/webservice.php`, and background jobs are executed by `vtigercrm-338345/vtigercron.php`. SOAP services are selected and dispatched by `vtigercrm-338345/vtigerservice.php`.
+
+Prompt for diagram: [Insert context diagram].
+
+```mermaid
+flowchart LR
+  U["User (browser)"] --> UI["UI front controller (vtigercrm-338345/index.php)"]
+  A["API client"] --> WS["Webservices endpoint (vtigercrm-338345/webservice.php)"]
+  S["Scheduler"] --> CRON["Cron runner (vtigercrm-338345/vtigercron.php)"]
+  I["Administrator"] --> INST["Installer (vtigercrm-338345/install.php)"]
+
+  UI --> DB["Relational DB (tables: vtiger_version, vtiger_users, vtiger_crmentity, ...)"]
+  WS --> DB
+  CRON --> DB
+  INST --> DB
+
+  UI <--> FS["Filesystem (storage/, cache/, Smarty/templates_c/)"]
+  CRON <--> FS
+  INST <--> FS
+```
+
+#### 8.3.1 Actors & External Systems
+
+| Actor / System | Type | Interaction | Protocol / Channel |
+|---|---|---|---|
+| CRM user | Human | Uses the server-rendered UI via `index.php`. | HTTP |
+| API client | System | Calls `webservice.php` with `operation` and parameters. | HTTP (JSON responses) |
+| Scheduler | System | Executes `vtigercron.php` periodically. | CLI (PHP_SAPI === "cli" gate in `vtigercrm-338345/vtigercron.php`) |
+| Relational database | System | Stores CRM data and metadata. Queried by `index.php`, `CRMEntity`, `OperationManager`, `Vtiger_Cron`. | DB protocol (configured by `$dbconfig` in `vtigercrm-338345/config.template.php`) |
+| Filesystem | System | Stores attachments and runtime artifacts. | Local filesystem |
+
+### 8.4 Logical View (Level 2)
+
+The logical view decomposes the monolith into subsystems that are directly evidenced by code files and key classes/functions.
+
+Prompt for diagram: [Insert logical diagram].
+
+```mermaid
+flowchart TB
+  subgraph SYS["vtiger CRM monolith (vtigercrm-338345/)"]
+    UI["UI routing and auth (index.php)"]
+    MOD["Modules (modules/<Module>/*.php)"]
+    ENT["Entity base and persistence (data/CRMEntity.php: class CRMEntity)"]
+    EVT["Events framework (include/events/include.inc -> VTEventsManager)"]
+    WS["Webservices dispatcher (webservice.php + include/Webservices/OperationManager.php: class OperationManager)"]
+    CR["Cron framework (vtlib/Vtiger/Cron.php: class Vtiger_Cron)"]
+    SEC["Include and file access guards (include/utils/CommonUtils.php: checkFileAccessForInclusion, checkFileAccess)"]
+    SAN["Input purification (include/utils/VtlibUtils.php: vtlib_purify)"]
+    TPL["Templating (Smarty_setup.php: class vtigerCRM_Smarty)"]
+    LOG["Logging config (log4php.properties)"]
+  end
+
+  UI --> SAN
+  UI --> SEC
+  UI --> MOD
+  MOD --> ENT
+  ENT --> EVT
+  WS --> SEC
+  WS --> ENT
+  CR --> SEC
+  CR --> ENT
+```
+
+#### 8.4.1 Logical Components
+
+| Component | Responsibility | Exposes | Consumes |
+|---|---|---|---|
+| UI front controller (`vtigercrm-338345/index.php`) | Session start, install check, version check, auth gating, module/action dispatch, permission checks. | HTTP UI entrypoint. | DB tables `vtiger_version`, `vtiger_users` (queried in `index.php`), sanitization (`vtlib_purify`), security logger, module scripts. |
+| Module action scripts (`vtigercrm-338345/modules/<Module>/<Action>.php`) | Per-module business logic, UI rendering, CRUD operations. | Included execution by `index.php` via `$currentModuleFile`. | `CRMEntity` base class and shared utilities. |
+| Entity and persistence (`vtigercrm-338345/data/CRMEntity.php`) | Shared entity lifecycle and persistence. Uses `vtiger_crmentity` and module tables via `$tab_name`. | `CRMEntity::save()`, `CRMEntity::saveentity()` used by module classes. | Events (`include/events/include.inc`), DB via `$adb`, file upload paths via `decideFilePath()` in `include/utils/CommonUtils.php`. |
+| Events framework (`vtigercrm-338345/include/events/include.inc`) | Loads event engine classes (e.g., `VTEventsManager.inc`, `VTEventTrigger.inc`) used by `CRMEntity::save()`. | Event triggers like `vtiger.entity.beforesave` and `vtiger.entity.aftersave`. | Event handler registrations performed by installer code in `vtigercrm-338345/install/CreateTables.inc.php` (`registerEvents()`). |
+| Webservices (`vtigercrm-338345/webservice.php`, `vtigercrm-338345/include/Webservices/OperationManager.php`) | Operation-based JSON API with DB-driven handler resolution. | HTTP JSON responses; operation dispatch. | DB tables `vtiger_ws_operation`, `vtiger_ws_operation_parameters` (queried in `OperationManager::fillOperationDetails()` / `fillOperationParameters()`). |
+| Cron (`vtigercrm-338345/vtigercron.php`, `vtigercrm-338345/vtlib/Vtiger/Cron.php`) | Execute registered tasks and manage task state. | CLI/background execution. | DB table `vtiger_cron_task` (created/queried by `Vtiger_Cron`). |
+| Include guards (`vtigercrm-338345/include/utils/CommonUtils.php`) | Prevent restricted file access and unsafe include paths. | `checkFileAccessForInclusion()`, `checkFileAccess()`. | `$root_directory` config. |
+| Sanitization (`vtigercrm-338345/include/utils/VtlibUtils.php`) | Purify malicious input using HTMLPurifier. | `vtlib_purify()` used by `index.php` (request-string building) and widely elsewhere. | `include/htmlpurifier/library/HTMLPurifier.auto.php`. |
+| Templating (`vtigercrm-338345/Smarty_setup.php`) | Provide `vtigerCRM_Smarty extends Smarty` with template dirs. | Smarty-based server-side rendering. | Smarty library `Smarty/libs/Smarty.class.php`. |
+| Logging (`vtigercrm-338345/log4php.properties`) | Define loggers and file appenders (security, install, migration, soap, platform, sqltime). | Log files under `logs/` such as `logs/security.log`. | log4php runtime configured in `vtigercrm-338345/include/logging.php` (included by `index.php` and `webservice.php`). |
+
+#### 8.4.2 Business Capability Traceability
+
+| Business Capability (Ref) | Architectural Component(s) | Notes |
+|---|---|---|
+| CAP-001 | `vtigercrm-338345/index.php`, `vtigercrm-338345/modules/*`, `vtigercrm-338345/data/CRMEntity.php` | UI dispatch includes module scripts; persistence is centralized in CRMEntity. |
+| CAP-002 | `vtigercrm-338345/webservice.php`, `vtigercrm-338345/include/Webservices/OperationManager.php` | Webservice operations are DB-driven. |
+| CAP-003 | `vtigercrm-338345/vtigercron.php`, `vtigercrm-338345/vtlib/Vtiger/Cron.php` | Tasks are DB-registered and frequency-gated. |
+| CAP-004 | `vtigercrm-338345/install.php`, `vtigercrm-338345/install/CreateTables.inc.php`, `vtigercrm-338345/schema/DatabaseSchema.xml` | Installer includes step file after checking allowed inclusion; CreateTables invokes schema XML. |
+
+### 8.5 Process / Behaviour View
+
+The system expresses three primary runtime behaviours.
+
+First, the UI lifecycle in `vtigercrm-338345/index.php` performs: install guard (`config.inc.php` existence check), config load, code-vs-DB version check (querying `vtiger_version`), authentication gating via `$_SESSION["authenticated_user_id"]` and `$_SESSION["app_unique_key"] == $application_unique_key`, and permission checks using `isPermitted()` before including `modules/<module>/<action>.php`.
+
+Second, the JSON Web Services lifecycle in `vtigercrm-338345/webservice.php` creates a `SessionManager` and an `OperationManager`, resolves operation definitions by querying `vtiger_ws_operation` and parameter definitions by querying `vtiger_ws_operation_parameters` in `vtigercrm-338345/include/Webservices/OperationManager.php`, includes the handler file from `handler_path`, and calls `handler_method`.
+
+Third, the cron lifecycle in `vtigercrm-338345/vtigercron.php` lists tasks using `Vtiger_Cron::listAllActiveInstances()` (querying `vtiger_cron_task` in `vtigercrm-338345/vtlib/Vtiger/Cron.php`), enforces frequency gating via `Vtiger_Cron::isRunnable()`, then `require_once` includes the handler file after `checkFileAccess()`.
+
+Prompt for sequence/state diagrams: [Insert key sequence diagrams].
+
+### 8.6 Data View
+
+Prompt for data flow diagram: [Insert data flow diagram].
+
+#### 8.6.1 Data Domains
+
+| Domain | Owner | Classification | Primary Store |
+|---|---|---|---|
+| Core CRM entities | [To be determined] | [To be determined] | Relational DB (`vtiger_crmentity` used by `vtigercrm-338345/data/CRMEntity.php`) |
+| User identity and access | [To be determined] | [To be determined] | Relational DB (`vtiger_users` queried by `vtigercrm-338345/index.php`; user privilege files under `vtigercrm-338345/user_privileges/` are generated by installer code in `vtigercrm-338345/install/CreateTables.inc.php`). |
+| Webservice metadata | [To be determined] | [To be determined] | Relational DB (`vtiger_ws_operation`, `vtiger_ws_operation_parameters` queried by `vtigercrm-338345/include/Webservices/OperationManager.php`). |
+| Cron task registry | [To be determined] | [To be determined] | Relational DB (`vtiger_cron_task` created and queried by `vtigercrm-338345/vtlib/Vtiger/Cron.php`). |
+| Attachments and files | [To be determined] | [To be determined] | Filesystem (paths returned by `decideFilePath()` in `vtigercrm-338345/include/utils/CommonUtils.php`) and DB (`vtiger_attachments`, `vtiger_seattachmentsrel` inserted by `CRMEntity::uploadAndSaveFile()` in `vtigercrm-338345/data/CRMEntity.php`). |
+
+#### 8.6.2 Data Governance
+
+| Concern | Approach |
+|---|---|
+| Soft delete | Records are soft-deleted via `vtiger_crmentity.deleted` (updated by `CRMEntity::mark_deleted()` in `vtigercrm-338345/data/CRMEntity.php`). |
+| Schema creation | Tables are created from XML schema (`vtigercrm-338345/schema/DatabaseSchema.xml`) via `$adb->createTables(...)` in `vtigercrm-338345/install/CreateTables.inc.php`. |
+| Audit trail | UI requests may write to `vtiger_audit_trial` from `vtigercrm-338345/index.php` when `user_privileges/audit_trail.php` enables auditing. |
+
+### 8.7 Deployment / Physical View
+
+Prompt for deployment diagram: [Insert deployment diagram].
+
+```mermaid
+flowchart LR
+  subgraph HOST["Host / VM"]
+    WEB["Web server + PHP runtime"]
+    APP["vtiger codebase (vtigercrm-338345/)"]
+    CRONPROC["Cron execution (php vtigercrm-338345/vtigercron.php)"]
+  end
+
+  WEB --> APP
+  CRONPROC --> APP
+  APP <--> DB["Database server"]
+  APP <--> FS["Local/shared filesystem (storage/, cache/, logs/)"]
+```
+
+#### 8.7.1 Infrastructure Summary
+
+| Concern | Detail |
+|---|---|
+| Web runtime | Not defined in repo; app entrypoints are PHP scripts such as `vtigercrm-338345/index.php` and `vtigercrm-338345/webservice.php`. |
+| Scheduler | External scheduler runs `vtigercrm-338345/vtigercron.php`; CLI access is allowed via `PHP_SAPI === "cli"` check in that file. |
+| Database | DB connection is configured via `$dbconfig[...]` keys in `vtigercrm-338345/config.template.php` and used by query calls in `index.php`, `CRMEntity.php`, `OperationManager.php`, and `Vtiger_Cron.php`. |
+| Logs | log4php appenders write to `logs/*.log` as defined in `vtigercrm-338345/log4php.properties`. |
+| Files | Uploads/attachments are stored under paths returned by `decideFilePath()` in `vtigercrm-338345/include/utils/CommonUtils.php` (default base `storage/`). |
+
+#### 8.7.2 Environment Strategy
+
+| Environment | Purpose | Key Differences from Production | Access Control |
+|---|---|---|---|
+| Development | Local development and debugging | [To be determined] | [To be determined] |
+| Test | Verification | [To be determined] | [To be determined] |
+| Production | Live CRM usage | [To be determined] | [To be determined] |
+
+### 8.8 Operational View
+
+| Concern | Detail |
+|---|---|
+| SLIs | Not defined in repo. Logs are available via log4php (`vtigercrm-338345/log4php.properties`). |
+| SLOs | [To be determined]. |
+| Alerting Policy | [To be determined]. |
+| Backup / Restore | Not defined in repo. However, soft-delete and restore flows exist in `vtigercrm-338345/data/CRMEntity.php` (`trash()`, `restore()`). |
+| Upgrade / Migration | `vtigercrm-338345/index.php` compares code version in `vtigercrm-338345/vtigerversion.php` with DB version from `vtiger_version`. |
+
+## 9. Technology Stack
+
+### 9.1 Approved Technologies
+
+| Layer | Technology | Version | Standard / Spec | Rationale |
+|---|---|---|---|---|
+| Application | vtiger CRM | 5.4.0 (`$vtiger_current_version` in `vtigercrm-338345/vtigerversion.php`) | [To be determined] | Primary CRM application. |
+| Runtime | PHP | >= 5.2.0 for UI (`vtigercrm-338345/index.php`) | PHP | Required by codebase constraints. |
+| Database access | ADODB / PearDatabase | [To be determined] | [To be determined] | Installer includes `adodb/adodb.inc.php` in `vtigercrm-338345/install.php`; cron framework requires `include/database/PearDatabase.php` in `vtigercrm-338345/vtlib/Vtiger/Cron.php`. |
+| Templating | Smarty | [To be determined] | Smarty | `vtigercrm-338345/Smarty_setup.php` requires `Smarty/libs/Smarty.class.php` and defines `class vtigerCRM_Smarty`. |
+| JSON | Zend_Json | [To be determined] | JSON | `vtigercrm-338345/webservice.php` requires `include/Zend/Json.php`; webservices dispatch uses `Zend_Json` in `vtigercrm-338345/include/Webservices/OperationManager.php`. |
+| Input purification | HTMLPurifier | [To be determined] | HTMLPurifier | `vtigercrm-338345/include/utils/VtlibUtils.php` loads `include/htmlpurifier/library/HTMLPurifier.auto.php` in `vtlib_purify()`. |
+| Logging | log4php | [To be determined] | log4php | Log destinations and levels defined in `vtigercrm-338345/log4php.properties`. |
+
+### 9.2 Technology Decisions Pending
+
+| Decision | Options Under Review | Decision Criteria | Target Date |
+|---|---|---|---|
+| Database engine standardization | [To be determined] | Operational support, performance, security | [To be determined] |
+| Web server/runtime standardization | [To be determined] | Security posture, throughput, manageability | [To be determined] |
+
+## 10. Cross-Cutting Concerns
+
+### 10.1 Security Architecture
+
+| Control Domain | Approach / Standard |
+|---|---|
+| Authentication (UI) | Session-based gate in `vtigercrm-338345/index.php` requiring `$_SESSION["authenticated_user_id"]` and `$_SESSION["app_unique_key"] == $application_unique_key` (key configured in `vtigercrm-338345/config.template.php`). |
+| Authorization (UI) | `isPermitted($module, $action, [$record])` checks in `vtigercrm-338345/index.php` (via `include/utils/UserInfoUtil.php`). |
+| Safe inclusion | `checkFileAccessForInclusion()` blocks unsafe include paths and unsafe directories (`storage`, `cache`, `test`) in `vtigercrm-338345/include/utils/CommonUtils.php`; used by `vtigercrm-338345/install.php` and `vtigercrm-338345/include/Ajax/CommonAjax.php`. |
+| Input sanitization | `vtlib_purify()` in `vtigercrm-338345/include/utils/VtlibUtils.php` uses HTMLPurifier and recursively purifies arrays and scalars. |
+| Cron access control | `vtigercrm-338345/vtigercron.php` allows execution only for CLI (`PHP_SAPI === "cli"`) or authenticated session with matching `app_unique_key`. |
+
+### 10.2 Observability
+
+| Pillar | Standard | Tooling | Coverage / SLO |
+|---|---|---|---|
+| Logging | log4php configuration | `vtigercrm-338345/log4php.properties` | Loggers for SECURITY/INSTALL/MIGRATION/SOAP/PLATFORM/SQLTIME, outputting to `logs/*.log`. |
+| Audit trails | DB table insert | `vtigercrm-338345/index.php` inserts into `vtiger_audit_trial` when enabled | [To be determined] |
+
+### 10.3 Resilience Patterns
+
+| Pattern | Application | Configuration |
+|---|---|---|
+| Frequency gating | Prevent too-frequent cron reruns | `Vtiger_Cron::isRunnable()` in `vtigercrm-338345/vtlib/Vtiger/Cron.php` |
+| Transactional persistence | Wraps entity save operations | `CRMEntity::saveentity()` starts/completes transaction (`startTransaction()` / `completeTransaction()`) in `vtigercrm-338345/data/CRMEntity.php` |
+
+### 10.4 Data Management
+
+| Concern | Policy |
+|---|---|
+| Attachments storage | Saved on filesystem under `storage/` path returned by `decideFilePath()` in `vtigercrm-338345/include/utils/CommonUtils.php`, with DB metadata inserted by `CRMEntity::uploadAndSaveFile()` in `vtigercrm-338345/data/CRMEntity.php`. |
+| Soft delete | Implemented via `vtiger_crmentity.deleted` updates in `CRMEntity::mark_deleted()` in `vtigercrm-338345/data/CRMEntity.php`. |
+
+## 11. Architecture Decision Records (ADRs)
+
+ADR status values: Proposed | Under Review | Accepted | Superseded | Deprecated.
+
+No ADR files are present in current sources. The template below can be used to capture decisions going forward.
+
+| Field | Value |
+|---|---|
+| ID / Status | ADR-001 / Proposed |
+| Date | [To be determined] |
+| Decision Makers | [To be determined] |
+| Review Date | [To be determined] |
+| Context | [Insert detail here] |
+| Decision | [Insert detail here] |
+| Alternatives Considered | [Insert detail here] |
+| Rationale | [Insert detail here] |
+| Positive Consequences | [Insert detail here] |
+| Negative Consequences / Trade-offs | [Insert detail here] |
+| Compliance Impact | [Insert detail here] |
+
+## 12. Architecture Governance
+
+### 12.1 Governance Model
+
+| Element | Detail |
+|---|---|
+| Ownership | [To be determined] |
+| Change control | [To be determined] |
+| Release governance | [To be determined] |
+| Security reviews | [To be determined] |
+
+### 12.2 Architecture Review Gates
+
+| Gate | Trigger | Review Scope | Approval Required |
+|---|---|---|---|
+| ARB-01 | New module or new entrypoint added under `vtigercrm-338345/` | Security include controls (`checkFileAccessForInclusion`), authz enforcement paths (`index.php`), data model changes | Enterprise Architect, Security Architect |
+| ARB-02 | Changes to webservice operations / handlers | DB metadata (`vtiger_ws_operation*`), handler inclusion, permissions in handler code | Enterprise Architect, Integration lead |
+| ARB-03 | Changes to cron tasks | `vtiger_cron_task` schema/usage, handler file safety (`checkFileAccess`) | Operations lead |
+
+### 12.3 Architecture Compliance Checklist
+
+The following checklist focuses on items directly evidenced or implied by this repository’s runtime model.
+
+- Logging destinations are configured and writable (`vtigercrm-338345/log4php.properties`).
+- Dynamic includes are guarded using `checkFileAccessForInclusion()` (`vtigercrm-338345/include/utils/CommonUtils.php`) wherever request-driven inclusion occurs (for example, `vtigercrm-338345/install.php`, `vtigercrm-338345/include/Ajax/CommonAjax.php`).
+- Web UI requests enforce permission checks via `isPermitted()` (implemented call site in `vtigercrm-338345/index.php`).
+- Cron execution is restricted to CLI or authenticated session (`vtigercrm-338345/vtigercron.php`).
+
+Requirement Inventory (explicit SAD regeneration requirements)
+
+The current work item contains explicit requirements to regenerate the SAD and enforce evidence-based traceability. These requirements are captured here for auditability.
+
+| Req ID | Type | Requirement (statement) | Source |
+|---|---|---|---|
+| REQ-001 | Functional | Regenerate the Software Architecture Document (SAD) and update the relevant documentation file(s). | Work item instruction: “Regenerate the Software Architecture Document (SAD)… and update the relevant documentation file(s).” |
+| REQ-002 | Constraint | Ensure every architectural claim is backed by explicit references to repository file paths, class names, and/or database tables. | Work item instruction: “…ensuring every architectural claim is backed by explicit references…” |
+| REQ-003 | Constraint | Provide auditable requirement traceability deliverables (inventory, trace matrix, update rules, and verification policy) when explicit requirements exist. | Skill instruction: “Requirement_Traceability_Enforcement_Reqs_to_Code” (task prompt). |
+
+Requirement Trace Matrix
+
+| Req ID | Requirement | Source | Implementation Mapping | Inline Code Trace | Verification Mapping | Status | Notes |
+|---|---|---|---|---|---|---|---|
+| REQ-001 | Regenerate the SAD and update relevant documentation file(s). | Work item instruction (see above). | `vtigercrm-338345/Docs/VTigerCRM-Architecture-Overview.md` (this file). | Not applicable (documentation-only change). | Manual review: confirm this document exists and contains the TOGAF/ISO SAD template sections 1–15. | Implemented | This update overwrote the prior architecture overview with a SAD-structured document. |
+| REQ-002 | Every architectural claim must be backed by explicit references to code paths/classes/tables. | Work item instruction (see above). | This SAD references concrete file paths and symbols such as `CRMEntity::save()` in `vtigercrm-338345/data/CRMEntity.php`, `OperationManager` in `vtigercrm-338345/include/Webservices/OperationManager.php`, and tables `vtiger_ws_operation`, `vtiger_cron_task` as queried/created by those components. | Not applicable (documentation-only change). | Spot-check: pick any major architectural statement and confirm a cited file path/symbol/table exists in the repo (examples: `vtigercrm-338345/index.php`, `vtigercrm-338345/include/utils/CommonUtils.php`). | Implemented | Architectural statements in this SAD are written to include explicit evidence references. |
+| REQ-003 | Provide traceability deliverables (inventory, matrix, update rules, verification policy). | Skill instruction (task prompt). | Included in SAD section 12.3 (this section). | Inline requirement markers in source code are not added because this task updates documentation only and the instructions for this step forbid source code changes. | Verification is documentation-based and command-based (see policy below). | Partial | To fully satisfy the skill’s “inline requirement marker” requirement, a separate task must be created that permits editing source code and inserting `REQ:` comments at the indicated owning boundaries. |
+
+Inline Requirement ID Convention (documentation-only application)
+
+Because this task updates documentation only, no source-code inline `REQ:` markers are added. For future code changes where inline markers are permitted, use:
+
+- `# REQ: REQ-002 - Evidence-based architectural claims` (PHP single-line comment `//` in PHP files)
+
+Recommended owning boundaries (not applied in repo in this change):
+
+- `vtigercrm-338345/index.php` near the module/action inclusion gate and permission check as the primary enforcement location for UI routing and authorization.
+- `vtigercrm-338345/include/utils/CommonUtils.php` above `checkFileAccessForInclusion()` as the primary enforcement location for safe inclusion.
+- `vtigercrm-338345/include/Webservices/OperationManager.php` in `fillOperationDetails()` where `vtiger_ws_operation` is queried to ground API dispatch claims.
+
+Update Rules
+
+When requirements or code locations change, update the traceability artifacts as follows.
+
+First, when requirement text changes, update the requirement statement and its quoted source in the inventory and matrix, then re-audit mapped file paths and symbols for ownership changes. Second, when code is refactored, update the “Implementation Mapping” and any proposed “Inline Code Trace” locations in the same change set to prevent stale references. Third, when verification improves (for example, from manual to automated), update the “Verification Mapping” and adjust Status accordingly.
+
+Verification Artifacts Policy
+
+This repository includes executable entry scripts that can be used as repeatable verification artifacts even when automated tests are not available from current sources. UI behaviour can be verified by exercising `vtigercrm-338345/index.php` in a running environment. API behaviour can be verified with curl commands documented in `vtigercrm-338345/Docs/API_Documentation.md` against `vtigercrm-338345/webservice.php`. Cron behaviour can be verified by running `php vtigercrm-338345/vtigercron.php` and observing output, which is consistent with the `Vtiger_Cron::isRunnable()` logic in `vtigercrm-338345/vtlib/Vtiger/Cron.php`. If formal tests are introduced later, the preferred location for verification is a dedicated test suite directory (no standard PHP unit framework usage is evidenced in the sources used for this SAD).
+
+End-of-work checklist confirmation (traceability)
+
+All explicit requirements from the provided work item/skill instructions were inventoried. A trace matrix exists and maps each requirement to a concrete documentation artifact and to verification approaches supported by existing scripts/docs. Inline requirement markers were not added because this task updates documentation only; the gap is explicitly recorded as “Partial” with remediation guidance. All referenced file paths, scripts, and tables are evidenced by the referenced source files in this repository.
+
+## 13. Transition Architecture & Roadmap
+
+### 13.1 Migration Approach
+
+No explicit transition plan is present in current sources. The system enforces a code-vs-database version gate by reading the code version from `vtigercrm-338345/vtigerversion.php` and comparing it to the database’s `vtiger_version.current_version` in `vtigercrm-338345/index.php`. This implies that migrations must keep the `vtiger_version` table consistent with the codebase version before the UI will proceed.
+
+### 13.2 Phased Delivery Roadmap
+
+| Phase | Scope | Target Date | Architectural Milestone | Exit Criteria |
+|---|---|---|---|---|
+| P-001 | [To be determined] | [To be determined] | [To be determined] | [To be determined] |
+
+## 14. RAID Log
+
+### 14.1 Risks
+
+| ID | Risk | Probability | Impact | Mitigation / Contingency |
+|---|---|---|---|---|
+| R-001 | Misconfiguration of DB-driven webservice operations could expose unintended handlers. | Medium | High | Govern changes to `vtiger_ws_operation*` and review handler paths in `vtigercrm-338345/include/Webservices/OperationManager.php`. |
+| R-002 | Dynamic include surfaces can remain risky if new call sites omit include guards. | Medium | High | Enforce use of `checkFileAccessForInclusion()` (`vtigercrm-338345/include/utils/CommonUtils.php`) at all request-driven include points; add code review gate ARB-01. |
+| R-003 | Cron tasks executed via web (non-CLI) could be abused if session gating is bypassed. | Low | High | Prefer CLI scheduling; keep `app_unique_key` validation (`vtigercrm-338345/vtigercron.php`) and secure session handling. |
+
+### 14.2 Assumptions
+
+| ID | Assumption | Owner | Validation Method |
+|---|---|---|---|
+| A-001 | Web server routes to PHP entrypoints. | Ops | Validate web server configuration in deployment environment. |
+| A-002 | DB credentials are generated and secured. | Ops/Security | Validate `config.inc.php` generation process and secrets handling. |
+
+### 14.3 Issues
+
+| ID | Issue | Raised By | Status / Resolution |
+|---|---|---|---|
+| I-001 | Inline requirement markers not added to code due to documentation-only scope. | SAD regeneration task | Open; requires follow-up task that permits source code edits. |
+
+### 14.4 Dependencies
+
+| ID | Dependency | Owner | Impact if Not Met |
+|---|---|---|---|
+| D-001 | Database availability and schema alignment | Ops | `index.php` version gate and all core operations will fail if DB is unavailable/mismatched. |
+| D-002 | Scheduler to run cron | Ops | Automation tasks registered in `vtiger_cron_task` will not execute without `vtigercron.php` runs. |
+
+## 15. Glossary
+
+| Term | Definition |
+|---|---|
+| Entrypoint script | A top-level PHP script invoked directly (e.g., `vtigercrm-338345/index.php`, `vtigercrm-338345/webservice.php`). |
+| Module | A functional unit under `vtigercrm-338345/modules/<Module>/` with action scripts and usually an entity class. |
+| CRMEntity | Base class for entities providing persistence and lifecycle hooks (`class CRMEntity` in `vtigercrm-338345/data/CRMEntity.php`). |
+| Webservice operation | A named API operation resolved from DB metadata by `OperationManager` (`vtigercrm-338345/include/Webservices/OperationManager.php`). |
+| Cron task | A scheduled job stored in `vtiger_cron_task` and executed by `vtigercrm-338345/vtigercron.php` through `Vtiger_Cron` (`vtigercrm-338345/vtlib/Vtiger/Cron.php`). |
+| Safe include | Inclusion guarded by `checkFileAccessForInclusion()` (`vtigercrm-338345/include/utils/CommonUtils.php`) to prevent restricted file access. |
+| Purification | Input sanitization performed by `vtlib_purify()` (`vtigercrm-338345/include/utils/VtlibUtils.php`) using HTMLPurifier. |
