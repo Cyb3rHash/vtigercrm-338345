@@ -1,5 +1,6 @@
 # Specs
 
-This section contains system and component specifications published for the repository.
+This section contains published engineering specifications for the repository. The primary categories are high-level architecture specifications and detailed, implementation-oriented designs.
 
-The architecture specifications index is available at `kavia-docs/CodeWiki/Specs/ArchitectureSpecs/index.md`.
+- [Architecture Specs](ArchitectureSpecs/index.md)
+- [Detailed Designs](DetailedDesigns/index.md)
